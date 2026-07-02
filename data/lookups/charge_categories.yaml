@@ -1,0 +1,19 @@
+# Plain-language charge taxonomy. The phase 4 loader maps statutes to these
+# categories; slugs are stable identifiers, do not rename casually.
+categories:
+  - {slug: drug-possession, name: Drug Possession}
+  - {slug: drug-delivery, name: Drug Delivery (PWID)}
+  - {slug: dui, name: DUI}
+  - {slug: simple-assault, name: Simple Assault}
+  - {slug: aggravated-assault, name: Aggravated Assault}
+  - {slug: robbery, name: Robbery}
+  - {slug: burglary, name: Burglary}
+  - {slug: theft, name: Theft}
+  - {slug: retail-theft, name: Retail Theft}
+  - {slug: firearms, name: Firearms (VUFA)}
+  - {slug: criminal-trespass, name: Criminal Trespass}
+  - {slug: terroristic-threats, name: Terroristic Threats}
+  - {slug: fraud-forgery, name: Fraud and Forgery}
+  - {slug: sexual-offenses, name: Sexual Offenses}
+  - {slug: homicide, name: Homicide}
+  - {slug: other, name: Other}

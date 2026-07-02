@@ -1,0 +1,6 @@
+# Manual resolution map for ambiguous judge name variants. The phase 4
+# loader consults this after exact-alias and unambiguous-initial matching.
+# Format:
+#   "Raw Name As Printed": "Normalized Last, First M."
+# Keep empty until real ambiguity appears. Never invent entries.
+overrides: {}

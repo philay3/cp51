@@ -1,0 +1,21 @@
+# Raw PA disposition text to analysis category. This is a starting seed;
+# it is extended in phase 4 as real dockets surface new strings. Unmapped
+# strings fall to other and the unmapped share is tracked.
+categories: [dismissed, diversion, plea, trial_convicted, trial_acquitted, other]
+map:
+  "Nolle Prossed": dismissed
+  "Withdrawn": dismissed
+  "Dismissed": dismissed
+  "Quashed": dismissed
+  "Dismissed - LOP": dismissed
+  "ARD": diversion
+  "Probation Without Verdict": diversion
+  "Guilty Plea - Negotiated": plea
+  "Guilty Plea - Non-Negotiated": plea
+  "Guilty Plea": plea
+  "Nolo Contendere": plea
+  "Guilty": trial_convicted
+  "Not Guilty": trial_acquitted
+  "Transferred to Another Jurisdiction": other
+  "Mistrial": other
+  "Moved to Inactive": other

@@ -1,35 +1,22 @@
-# Python virtual environment
+# Python
+__pycache__/
+*.py[cod]
 .venv/
 venv/
-env/
-ENV/
+*.egg-info/
 
-# Environment variables (contains private salt and secrets)
+# Env and secrets
 .env
 
-# Data files (all database, downloaded dockets, and parsed output stay local)
-data/
+# Data stays local (lookups are the tracked exception)
+data/raw/
+data/interim/
+data/processed/
 *.db
-*.db-journal
-*.db-wal
 *.sqlite
-*.sqlite3
 
-# Python caches and compiled files
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-.pytest_cache/
-.mypy_cache/
-.coverage
-htmlcov/
+# Notebooks
+.ipynb_checkpoints/
 
-# macOS system files
+# OS
 .DS_Store
-
-# Frontend build artifacts and dependencies (for React app)
-node_modules/
-dist/
-build/
-.eslintcache

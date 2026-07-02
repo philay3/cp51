@@ -1,418 +1,345 @@
-# Current task: Phase 1, scaffold CP51
+# Current task: environment repair and fixture acquisition
 
-This file is self-contained. Everything needed for this task is here. The
-docs/ folder in this repo is content to commit, not required reading. Do not
-consult other documents to perform this task.
+This file is self-contained. Everything needed for this task is here. Do not
+consult other documents to perform it.
 
 ## Orientation (all the context you need)
 
 CP51 builds a dataset of Philadelphia criminal court outcomes from public
-docket sheets, and a forecaster on top of it. This task creates the project
-skeleton: directories, config, database schema, seeded lookup files,
-environment, and the first commit. No scraping, no parsing, no analysis.
+Court of Common Pleas docket sheets. Phase 1 (scaffold, schema, first commit)
+is done; see tasks/worklog.md. This task does three things: repairs the
+environment (a stray IDE setting and a Python 3.9 runtime), acquires roughly
+30 real docket sheet PDFs as the parser's validation fixtures, and summarizes
+what was fetched. No parsing logic is built in this task.
 
 ## Ground rules
 
-- **Commands are ask-first.** Per the global rules: present the exact
-  command(s) with a one line reason, stop, and wait. Related setup commands
-  may be grouped as one logical block per ask. Never assume an outcome you
-  have not seen.
-- **No em dashes anywhere.** Code, comments, YAML, commit messages, worklog
-  entries. Use periods, commas, parentheses, or colons.
-- **Already in this folder, do not modify:** README.md, docs/,
-  PROJECT-INSTRUCTIONS.md, and this file. worklog.md is where you report,
-  append-only, format at the top of that file.
-- **The salt.** After copying .env.example to .env, stop there: the owner
-  sets DEFENDANT_HASH_SALT personally. Never generate, read, or print it.
-  Database initialization does not need it.
-- **Scope.** Scaffold only. No acquisition code, no parser code, no contact
-  with any court website. Stop at the definition of done.
+- **Commands are ask-first.** Present the exact command(s) with a one line
+  reason, stop, and wait. Related commands may be grouped as one logical
+  block per ask. Never assume an outcome you have not seen.
+- **Portal authorization, scoped to this task.** The owner directs the
+  following and nothing more: up to 3 single-docket probe lookups, then one
+  batch run capped at 60 lookups total. Every lookup is separated by the
+  randomized MIN_DELAY to MAX_DELAY sleep, success or failure. If anything
+  suggests blocking (repeated failures, challenge pages), stop immediately
+  and report. No other portal contact of any kind.
+- **Privacy.** Docket PDFs contain defendant names. Never print, log, or
+  commit extracted docket text. PDFs stay in data/raw/, which is gitignored.
+  Never read, print, or verify the value of DEFENDANT_HASH_SALT.
+- **No em dashes anywhere.** Code, comments, commits, worklog entries.
+- **Do not modify** README.md, docs/, PROJECT-INSTRUCTIONS.md, or this file.
+  Report in tasks/worklog.md, append-only, format at the top of that file.
 
-## Step 1: directory structure
+## Step 0: remove the env-injection setting
 
-Create inside the current folder (it already contains README.md, docs/, and
-the task files):
-
-```bash
-mkdir -p data/{raw,interim,processed,lookups} src/{acquire,parse,db,analysis} notebooks scripts tests
-touch src/__init__.py src/acquire/__init__.py src/parse/__init__.py src/db/__init__.py src/analysis/__init__.py
-```
-
-## Step 2: files to create (exact contents)
-
-### .gitignore
+1. Delete .vscode/settings.json (it enables terminal environment file
+   injection, which would surface .env values, including the salt, in every
+   IDE terminal; config.py already loads .env at runtime so nothing needs it).
+   If the file contains unrelated settings, remove only the env injection
+   keys and say so in the worklog.
+2. Append this block to .gitignore:
 
 ```gitignore
-# Python
-__pycache__/
-*.py[cod]
-.venv/
-venv/
-*.egg-info/
 
-# Env and secrets
-.env
-
-# Data stays local (lookups are the tracked exception)
-data/raw/
-data/interim/
-data/processed/
-*.db
-*.sqlite
-
-# Notebooks
-.ipynb_checkpoints/
-
-# OS
-.DS_Store
+# IDE
+.vscode/
 ```
 
-### requirements.txt
-
-PyYAML is included now because the lookup files below are YAML and the
-phase 4 loader reads them.
-
-```text
-playwright>=1.44
-pdfplumber>=0.11
-SQLAlchemy>=2.0
-pandas>=2.2
-python-dotenv>=1.0
-tenacity>=8.2
-PyYAML>=6.0
-```
-
-### .env.example
-
-```text
-# Copy to .env and fill in. Never commit .env.
-DATABASE_URL=sqlite:///data/processed/phl.db
-MIN_DELAY=3
-MAX_DELAY=7
-DEFENDANT_HASH_SALT=set-a-long-random-string-here
-```
-
-### src/config.py
-
-```python
-from pathlib import Path
-import os
-from dotenv import load_dotenv
-
-load_dotenv()
-
-ROOT = Path(__file__).resolve().parents[1]
-DATA_DIR = ROOT / "data"
-RAW_DIR = DATA_DIR / "raw"
-INTERIM_DIR = DATA_DIR / "interim"
-PROCESSED_DIR = DATA_DIR / "processed"
-LOOKUPS_DIR = DATA_DIR / "lookups"
-
-for d in (RAW_DIR, INTERIM_DIR, PROCESSED_DIR, LOOKUPS_DIR):
-    d.mkdir(parents=True, exist_ok=True)
-
-DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{PROCESSED_DIR / 'phl.db'}")
-
-# Scrape politeness. Randomized delay between requests, in seconds.
-MIN_DELAY = float(os.getenv("MIN_DELAY", "3"))
-MAX_DELAY = float(os.getenv("MAX_DELAY", "7"))
-
-# Target scope.
-TARGET_COUNTY = "Philadelphia"
-TARGET_COURT_TYPE = "Common Pleas"
-
-# Salt for pseudonymous defendant hashing. Set a real value in .env, never commit it.
-DEFENDANT_HASH_SALT = os.getenv("DEFENDANT_HASH_SALT", "change-me-in-env")
-```
-
-### src/db/schema.py
-
-```python
-"""
-Database schema for CP51, schema v2.
-
-Authoritative reference: docs/DATABASE.md. Grain:
-- cases: one row per docket (one criminal case).
-- charges: one row per charge on a docket (a case usually has several).
-- sentences: one row per sentence component; a single charge can carry
-  several (confinement plus a consecutive probation tail, for example).
-- judges and judge_aliases: raw name variants resolve to one identity.
-- charge_categories: plain-language taxonomy defendants actually search by.
-- defendants: pseudonymous. Names are never stored; only a salted hash.
-"""
-
-from __future__ import annotations
-from datetime import date, datetime
-from sqlalchemy import String, Integer, Date, DateTime, ForeignKey, Text, func
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
-
-
-class Base(DeclarativeBase):
-    pass
-
-
-class Judge(Base):
-    __tablename__ = "judges"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    name_normalized: Mapped[str] = mapped_column(String(200), unique=True, index=True)
-    slug: Mapped[str | None] = mapped_column(String(80), unique=True)
-    first_seen: Mapped[date | None] = mapped_column(Date)
-    last_seen: Mapped[date | None] = mapped_column(Date)
-
-    aliases: Mapped[list["JudgeAlias"]] = relationship(
-        back_populates="judge", cascade="all, delete-orphan"
-    )
-    cases: Mapped[list["Case"]] = relationship(back_populates="judge")
-
-
-class JudgeAlias(Base):
-    __tablename__ = "judge_aliases"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    judge_id: Mapped[int] = mapped_column(ForeignKey("judges.id"))
-    name_raw: Mapped[str] = mapped_column(String(200), unique=True, index=True)
-
-    judge: Mapped["Judge"] = relationship(back_populates="aliases")
-
-
-class Defendant(Base):
-    __tablename__ = "defendants"
-
-    # Salted hash of normalized name plus year of birth, never the name.
-    # Future column, deliberately not added yet: prior_record_context
-    # (requires Court Summary parsing; see docs/ROADMAP.md, parked).
-    id: Mapped[str] = mapped_column(String(64), primary_key=True)
-
-    cases: Mapped[list["Case"]] = relationship(back_populates="defendant")
-
-
-class Case(Base):
-    __tablename__ = "cases"
-
-    docket_number: Mapped[str] = mapped_column(String(40), primary_key=True)
-    county: Mapped[str] = mapped_column(String(40), default="Philadelphia")
-    court_type: Mapped[str] = mapped_column(String(40), default="Common Pleas")
-    case_status: Mapped[str | None] = mapped_column(String(40))
-    filed_date: Mapped[date | None] = mapped_column(Date)
-    otn: Mapped[str | None] = mapped_column(String(40))
-
-    # judge_id is the sentencing judge: the modal judge across this case's
-    # sentenced charges. Charge-level truth is charges.disposition_judge_id.
-    judge_id: Mapped[int | None] = mapped_column(ForeignKey("judges.id"))
-    # The "Judge Assigned" string from the case header, kept raw only.
-    assigned_judge_raw: Mapped[str | None] = mapped_column(Text)
-    defendant_id: Mapped[str | None] = mapped_column(ForeignKey("defendants.id"))
-
-    source_url: Mapped[str | None] = mapped_column(Text)
-    scraped_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
-
-    judge: Mapped["Judge | None"] = relationship(back_populates="cases")
-    defendant: Mapped["Defendant | None"] = relationship(back_populates="cases")
-    charges: Mapped[list["Charge"]] = relationship(
-        back_populates="case", cascade="all, delete-orphan"
-    )
-
-
-class ChargeCategory(Base):
-    __tablename__ = "charge_categories"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    slug: Mapped[str] = mapped_column(String(60), unique=True)
-    name: Mapped[str] = mapped_column(String(120))
-
-    charges: Mapped[list["Charge"]] = relationship(back_populates="category")
-
-
-class Charge(Base):
-    __tablename__ = "charges"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    docket_number: Mapped[str] = mapped_column(ForeignKey("cases.docket_number"))
-    sequence: Mapped[int | None] = mapped_column(Integer)
-    statute: Mapped[str | None] = mapped_column(String(60))
-    grade: Mapped[str | None] = mapped_column(String(10))  # F1..F3, M1..M3, S
-    offense: Mapped[str | None] = mapped_column(Text)
-    category_id: Mapped[int | None] = mapped_column(ForeignKey("charge_categories.id"))
-
-    disposition_raw: Mapped[str | None] = mapped_column(String(120))
-    # Derived at load time from data/lookups/disposition_map.yaml:
-    # dismissed, diversion, plea, trial_convicted, trial_acquitted, other.
-    disposition_category: Mapped[str | None] = mapped_column(String(30))
-    disposition_date: Mapped[date | None] = mapped_column(Date)
-    disposition_judge_id: Mapped[int | None] = mapped_column(ForeignKey("judges.id"))
-
-    case: Mapped["Case"] = relationship(back_populates="charges")
-    category: Mapped["ChargeCategory | None"] = relationship(back_populates="charges")
-    disposition_judge: Mapped["Judge | None"] = relationship(
-        foreign_keys=[disposition_judge_id]
-    )
-    sentences: Mapped[list["Sentence"]] = relationship(
-        back_populates="charge", cascade="all, delete-orphan"
-    )
-
-
-class Sentence(Base):
-    __tablename__ = "sentences"
-
-    # One row per sentence component, one to many with charges.
-    id: Mapped[int] = mapped_column(primary_key=True)
-    charge_id: Mapped[int] = mapped_column(ForeignKey("charges.id"))
-    sentence_type: Mapped[str | None] = mapped_column(String(80))
-    min_days: Mapped[int | None] = mapped_column(Integer)  # PA min-max ranges
-    max_days: Mapped[int | None] = mapped_column(Integer)
-    program: Mapped[str | None] = mapped_column(String(120))
-    sentence_date: Mapped[date | None] = mapped_column(Date)
-    raw_text: Mapped[str | None] = mapped_column(Text)  # component as printed
-
-    charge: Mapped["Charge"] = relationship(back_populates="sentences")
-
-
-class RawDocket(Base):
-    """Fetch and parse tracking, so the pipeline is reproducible and idempotent."""
-    __tablename__ = "raw_dockets"
-
-    docket_number: Mapped[str] = mapped_column(String(40), primary_key=True)
-    pdf_path: Mapped[str | None] = mapped_column(Text)
-    fetched_at: Mapped[datetime | None] = mapped_column(DateTime)
-    parse_status: Mapped[str] = mapped_column(String(20), default="pending")
-    notes: Mapped[str | None] = mapped_column(Text)
-```
-
-### src/db/session.py
-
-```python
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from src.config import DATABASE_URL
-from src.db.schema import Base
-
-engine = create_engine(DATABASE_URL, future=True)
-SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
-
-
-def init_db() -> None:
-    Base.metadata.create_all(engine)
-
-
-if __name__ == "__main__":
-    init_db()
-    print("Database initialized.")
-```
-
-### data/lookups/charge_categories.yaml
-
-```yaml
-# Plain-language charge taxonomy. The phase 4 loader maps statutes to these
-# categories; slugs are stable identifiers, do not rename casually.
-categories:
-  - {slug: drug-possession, name: Drug Possession}
-  - {slug: drug-delivery, name: Drug Delivery (PWID)}
-  - {slug: dui, name: DUI}
-  - {slug: simple-assault, name: Simple Assault}
-  - {slug: aggravated-assault, name: Aggravated Assault}
-  - {slug: robbery, name: Robbery}
-  - {slug: burglary, name: Burglary}
-  - {slug: theft, name: Theft}
-  - {slug: retail-theft, name: Retail Theft}
-  - {slug: firearms, name: Firearms (VUFA)}
-  - {slug: criminal-trespass, name: Criminal Trespass}
-  - {slug: terroristic-threats, name: Terroristic Threats}
-  - {slug: fraud-forgery, name: Fraud and Forgery}
-  - {slug: sexual-offenses, name: Sexual Offenses}
-  - {slug: homicide, name: Homicide}
-  - {slug: other, name: Other}
-```
-
-### data/lookups/disposition_map.yaml
-
-```yaml
-# Raw PA disposition text to analysis category. This is a starting seed;
-# it is extended in phase 4 as real dockets surface new strings. Unmapped
-# strings fall to other and the unmapped share is tracked.
-categories: [dismissed, diversion, plea, trial_convicted, trial_acquitted, other]
-map:
-  "Nolle Prossed": dismissed
-  "Withdrawn": dismissed
-  "Dismissed": dismissed
-  "Quashed": dismissed
-  "Dismissed - LOP": dismissed
-  "ARD": diversion
-  "Probation Without Verdict": diversion
-  "Guilty Plea - Negotiated": plea
-  "Guilty Plea - Non-Negotiated": plea
-  "Guilty Plea": plea
-  "Nolo Contendere": plea
-  "Guilty": trial_convicted
-  "Not Guilty": trial_acquitted
-  "Transferred to Another Jurisdiction": other
-  "Mistrial": other
-  "Moved to Inactive": other
-```
-
-### data/lookups/judge_overrides.yaml
-
-```yaml
-# Manual resolution map for ambiguous judge name variants. The phase 4
-# loader consults this after exact-alias and unambiguous-initial matching.
-# Format:
-#   "Raw Name As Printed": "Normalized Last, First M."
-# Keep empty until real ambiguity appears. Never invent entries.
-overrides: {}
-```
-
-## Step 3: environment and database
-
-Present as one grouped ask:
+3. Then tell the owner: "Step 0 done, safe to set the salt now." The owner
+   sets it out of band. Never ask what it is. You may confirm it is set with
+   exactly this command and nothing else (it prints no values):
 
 ```bash
-python -m venv .venv
+grep -q "set-a-long-random-string-here" .env && echo "salt NOT set yet" || echo "salt set"
+```
+
+## Step 1: rebuild the runtime on Python 3.12+
+
+Python 3.9 is end of life and the phase 5 analysis stack (current scipy and
+statsmodels) no longer supports it. Keep the typing.Optional annotations in
+schema.py exactly as they are (they run everywhere); only the interpreter
+changes.
+
+Check what exists:
+
+```bash
+python3.13 --version || python3.12 --version
+```
+
+If neither is present, propose (flag it as a system-level install):
+
+```bash
+brew install python@3.12
+```
+
+Then rebuild the environment (adjust python3.12 to whichever version exists):
+
+```bash
+rm -rf .venv
+python3.12 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 playwright install chromium
-cp .env.example .env
 python -m src.db.session
+python -c "import sqlalchemy, pdfplumber, yaml, playwright; import sys; print('env ok on', sys.version)"
 ```
 
-After this block: report that .env exists and is awaiting the owner's salt,
-then verify the schema with an approved command:
+## Step 2: create the fixture fetcher (exact contents)
 
-```bash
-sqlite3 data/processed/phl.db ".tables"
+### scripts/fetch_fixtures.py
+
+```python
+"""
+Fixture acquisition: fetch a small, polite batch of Philadelphia CP docket
+sheet PDFs to serve as the parser's validation set.
+
+Standalone by design; phase 2 proper refactors this into src/acquire/.
+Run only when the owner directs it. Politeness is not optional: a randomized
+MIN_DELAY to MAX_DELAY sleep separates every attempt, success or failure.
+
+Usage:
+  python scripts/fetch_fixtures.py --probe   # exactly one known docket
+  python scripts/fetch_fixtures.py           # batch: stop at 30 saved or 60 tries
+"""
+
+from __future__ import annotations
+
+import random
+import sys
+import time
+from datetime import datetime
+from pathlib import Path
+
+from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
+
+from src.config import MIN_DELAY, MAX_DELAY, RAW_DIR, INTERIM_DIR
+from src.db.session import SessionLocal, init_db
+from src.db.schema import RawDocket
+
+PORTAL = "https://ujsportal.pacourts.us/CaseSearch"
+PROBE_DOCKET = "CP-51-CR-0000001-2023"
+
+TARGET_SAVED = 30   # stop after this many PDFs are on disk
+MAX_ATTEMPTS = 60   # hard cap on portal lookups for this run
+YEARS = [2019, 2020, 2021, 2022, 2023, 2024, 2025]
+SEQ_RANGE = (1, 6000)  # conservative; Philadelphia files far more per year
+
+
+def candidate_dockets(n: int) -> list[str]:
+    """Spread candidates across years with random sequences, no duplicates.
+
+    Seeded so a re-run proposes the same batch and cached hits are skipped.
+    """
+    rng = random.Random(51)
+    seen: set[str] = set()
+    out: list[str] = []
+    while len(out) < n:
+        year = rng.choice(YEARS)
+        seq = rng.randint(*SEQ_RANGE)
+        docket = f"CP-51-CR-{seq:07d}-{year}"
+        if docket not in seen:
+            seen.add(docket)
+            out.append(docket)
+    return out
+
+
+def polite_sleep() -> None:
+    time.sleep(random.uniform(MIN_DELAY, MAX_DELAY))
+
+
+def fetch_docket_pdf(page, docket: str) -> bytes | None:
+    """Search one docket number; return the docket sheet PDF bytes or None."""
+    page.goto(PORTAL, wait_until="networkidle")
+    page.get_by_label("Search By").select_option(label="Docket Number")
+    page.get_by_label("Docket Number").fill(docket)
+    page.get_by_role("button", name="Search").click()
+    page.wait_for_load_state("networkidle")
+
+    # The results row exposes a docket sheet link whose href carries a
+    # one-time hash, so capture the href and fetch it inside this session.
+    links = page.locator("a[href*='CpDocketSheet']")
+    if links.count() == 0:
+        return None
+    href = links.first.get_attribute("href")
+    if not href:
+        return None
+    url = href if href.startswith("http") else f"https://ujsportal.pacourts.us{href}"
+    resp = page.context.request.get(url)
+    if not resp.ok:
+        return None
+    body = resp.body()
+    if not body.startswith(b"%PDF"):
+        return None
+    return body
+
+
+def main() -> None:
+    probe = "--probe" in sys.argv
+    init_db()
+    session = SessionLocal()
+    saved = 0
+    attempts = 0
+    target = 1 if probe else TARGET_SAVED
+    candidates = [PROBE_DOCKET] if probe else candidate_dockets(MAX_ATTEMPTS)
+
+    with sync_playwright() as p:
+        # Headful on purpose: friendlier to the portal's bot checks.
+        browser = p.chromium.launch(headless=False)
+        page = browser.new_page()
+        for docket in candidates:
+            if saved >= target or attempts >= MAX_ATTEMPTS:
+                break
+            out_path = RAW_DIR / f"{docket}.pdf"
+            if out_path.exists():
+                print(f"cached, skipping: {docket}")
+                continue
+            attempts += 1
+            try:
+                pdf = fetch_docket_pdf(page, docket)
+            except PWTimeout:
+                pdf = None
+            except Exception as exc:  # keep the run alive; log type only
+                print(f"error on {docket}: {type(exc).__name__}")
+                pdf = None
+            if pdf:
+                out_path.write_bytes(pdf)
+                saved += 1
+                session.merge(RawDocket(
+                    docket_number=docket,
+                    pdf_path=str(out_path),
+                    fetched_at=datetime.now(),
+                    parse_status="pending",
+                    notes="fixture batch 1",
+                ))
+                session.commit()
+                print(f"saved {saved}: {docket}")
+            else:
+                print(f"no docket sheet: {docket}")
+                if probe:
+                    shot = INTERIM_DIR / "probe_failure.png"
+                    page.screenshot(path=str(shot), full_page=True)
+                    print(f"screenshot saved: {shot}")
+            polite_sleep()
+        browser.close()
+    session.close()
+    print(f"done: {saved} saved, {attempts} attempts")
+
+
+if __name__ == "__main__":
+    main()
 ```
 
-Expected output, exactly these eight tables: cases, charge_categories,
-charges, defendants, judge_aliases, judges, raw_dockets, sentences.
+### scripts/fixture_summary.py
 
-## Step 4: worklog, then git
+```python
+"""
+Coverage summary for fixture PDFs: which disposition and sentence keywords
+appear in each docket, so fixture variety can be judged at a glance.
 
-Append your worklog.md entry first (format at the top of that file), so it is
-included in the commit. Note in the entry that commit and push are the final
-approved commands after the entry is written. Then:
+Heuristic only ("Guilty Plea" also contains "Guilty"; treat counts as
+approximate). Prints docket numbers and matched keywords ONLY. Never prints
+extracted docket text: docket sheets contain defendant names and this
+project keeps names out of consoles, logs, and files.
+"""
+
+from __future__ import annotations
+
+from collections import Counter
+
+import pdfplumber
+
+from src.config import RAW_DIR
+
+KEYWORDS = [
+    "Nolle Prossed", "Withdrawn", "Dismissed",
+    "Guilty Plea - Negotiated", "Guilty Plea - Non-Negotiated",
+    "Guilty Plea", "Nolo Contendere", "Not Guilty", "ARD",
+    "Probation Without Verdict", "Confinement", "Probation",
+    "Jury Trial", "Bench Trial", "Migrated",
+]
+
+
+def main() -> None:
+    totals: Counter = Counter()
+    pdfs = sorted(RAW_DIR.glob("*.pdf"))
+    for path in pdfs:
+        try:
+            with pdfplumber.open(path) as pdf:
+                text = "\n".join((pg.extract_text() or "") for pg in pdf.pages)
+        except Exception as exc:
+            print(f"{path.stem}: unreadable ({type(exc).__name__})")
+            continue
+        hits = [k for k in KEYWORDS if k in text]
+        for k in hits:
+            totals[k] += 1
+        print(f"{path.stem}: {', '.join(hits) if hits else 'no keywords found'}")
+    print(f"\ncoverage across {len(pdfs)} dockets:")
+    for k in KEYWORDS:
+        print(f"  {k}: {totals[k]}")
+
+
+if __name__ == "__main__":
+    main()
+```
+
+## Step 3: probe run (one docket)
+
+Run, with owner approval:
 
 ```bash
-git init
+python scripts/fetch_fixtures.py --probe
+```
+
+- If it saves the PDF: proceed to step 4.
+- If it fails: read data/interim/probe_failure.png, adjust the selectors in
+  fetch_docket_pdf to match what the page actually shows, and probe again.
+  Maximum 3 probes total. If still failing after 3, stop, write a blocked
+  worklog entry describing exactly what the page showed, and end the task.
+
+## Step 4: batch run
+
+Run, with owner approval:
+
+```bash
+python scripts/fetch_fixtures.py
+```
+
+Expect a slow run by design (30 saves at 3 to 7 seconds between lookups,
+plus misses). Report the final "saved / attempts" line.
+
+## Step 5: coverage summary
+
+```bash
+python scripts/fixture_summary.py
+```
+
+Paste the summary output (docket numbers and keywords only) into the chat
+and include the coverage totals in the worklog entry. If fewer than 20 PDFs
+saved, say so; the owner decides whether to direct a second batch.
+
+## Step 6: worklog, commit, push
+
+Append the worklog entry first (format at the top of tasks/worklog.md), then,
+with approval:
+
+```bash
 git add .
-git commit -m "Scaffold CP51: structure, schema v2, docs, and lookups"
-gh repo create cp51 --private --source=. --remote=origin --push
+git status
+git commit -m "Repair environment and add fixture acquisition scripts"
+git push
 ```
 
-If gh is unavailable, the manual path (flag the push as a remote action):
-
-```bash
-git remote add origin git@github.com:philay3/cp51.git
-git branch -M main
-git push -u origin main
-```
+Confirm in git status that nothing under data/ is staged except
+data/lookups/ (PDFs and the database are gitignored and must stay local).
 
 ## Definition of done
 
-- Directory tree created; the pre-existing README.md, docs/, and task files
-  untouched.
-- All files above created with exactly the given contents.
-- Virtual environment ready, requirements installed, Chromium installed.
-- .env in place, salt flagged as owner-pending, value never touched.
-- Database exists with exactly the eight tables listed above.
-- Worklog entry appended.
-- One commit, pushed to github.com/philay3/cp51.
-- Stop. Do not begin acquisition or parsing work of any kind.
+- .vscode env injection removed and .vscode/ gitignored.
+- Owner confirmed able to set the salt (its value never touched or shown).
+- .venv rebuilt on Python 3.12 or newer; env ok check passed.
+- Both scripts created with exactly the given contents (selector fixes from
+  the probe step are the one permitted deviation; note them in the worklog).
+- Probe succeeded; batch run completed within the 60 lookup cap.
+- Coverage summary produced with keywords only, no docket text.
+- Worklog entry appended; one commit pushed; no PDFs or database committed.
+- Stop. No parser code, no further portal contact.

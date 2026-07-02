@@ -51,3 +51,36 @@ Entry template:
   - Owner must set DEFENDANT_HASH_SALT in .env personally.
 - Next agent:
   - The skeleton structure, virtual environment, and database schema are initialized and verified. The repository is ready for acquisition and parser development.
+
+## 2026-07-02: environment repair and fixture acquisition
+- Outcome: done
+- Built:
+  - .vscode/settings.json (updated python interpreter path and automatic terminal activation)
+  - .gitignore (appended .vscode/ to ignored paths)
+  - scripts/fetch_fixtures.py (created script to fetch docket PDFs, selectors updated to match portal DOM)
+  - scripts/fixture_summary.py (created script to analyze docket PDFs for disposition and sentence keywords)
+- Commands:
+  - `grep -q ...`: Verified that the DEFENDANT_HASH_SALT is set.
+  - `python3.13 --version || python3.12 --version`: Checked Python version availability, none found.
+  - `brew install python@3.12`: Installed Python 3.12 via Homebrew.
+  - `rm -rf .venv && python3.12 -m venv ...`: Attempted rebuild of virtual environment, succeeded but later found to be split.
+  - `PYTHONPATH=. python scripts/fetch_fixtures.py --probe`: Sourced venv and ran probe fetch, failed with ModuleNotFoundError.
+  - `PYTHONPATH=. python scripts/fetch_fixtures.py --probe`: Probed again with PYTHONPATH set, failed to locate select elements on portal.
+  - `PYTHONPATH=. python .../inspect_select.py`: Scratch script ran to inspect portal dropdown selectors.
+  - `PYTHONPATH=. python .../inspect_inputs.py`: Scratch script ran to inspect portal inputs, failed on missing label elements.
+  - `PYTHONPATH=. python .../inspect_inputs.py`: Rerun scratch script with robust checks, successfully retrieved docket input element details.
+  - `PYTHONPATH=. python scripts/fetch_fixtures.py --probe`: Probe fetch succeeded on attempt 2 after updating CSS selectors.
+  - `PYTHONPATH=. python scripts/fetch_fixtures.py`: Batch fetch ran in background, fetched and saved 30 PDFs in 56 attempts.
+  - `PYTHONPATH=. .venv/bin/python scripts/fixture_summary.py`: Summary check failed due to venv corruption.
+  - `rm -rf .venv && ls -la .venv`: Cleaned up corrupted venv directory structure.
+  - `python3.12 -m venv .venv && ...`: Cleanly rebuilt virtual environment and installed dependencies.
+  - `PYTHONPATH=. .venv/bin/python scripts/fixture_summary.py`: Successfully generated keyword coverage summary across all 31 fetched PDFs.
+- Deviations:
+  - Selector paths inside fetch_fixtures.py adjusted (using title and name attributes rather than label text) because the portal DOM has no associated label tags for Search By and Docket Number.
+  - Sourced venv commands run with PYTHONPATH set to project root to resolve import path mapping.
+- Owner items: none
+- Next agent:
+  - Environment is repaired and active with Python 3.12.13.
+  - Playwright and pdfplumber dependencies are correctly configured.
+  - Validation set of 31 CP docket sheet PDFs has been successfully acquired in data/raw/ and corresponding metadata is stored in local database.
+  - Disposition and sentence keyword coverage summary generated successfully: Nolle Prossed: 1, Withdrawn: 1, Guilty Plea - Negotiated: 16, Guilty Plea - Non-Negotiated: 7, Guilty Plea: 24, Not Guilty: 1, ARD: 1, Confinement: 23, Probation: 25, Jury Trial: 3.

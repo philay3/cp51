@@ -17,3 +17,41 @@ categories:
   - {slug: sexual-offenses, name: Sexual Offenses}
   - {slug: homicide, name: Homicide}
   - {slug: other, name: Other}
+
+statute_map:
+  # Exact statute strings win over prefixes; longest prefix wins otherwise;
+  # anything unmatched falls to other and the other share is reported.
+  # Deliberately unmapped in v1: conspiracy (18 § 903), attempt (18 § 901),
+  # instruments of crime (18 § 907), REAP (18 § 2705).
+  exact:
+    "35 § 780-113 §§ A30": drug-delivery
+  prefix:
+    "35 § 780-113": drug-possession
+    "75 § 3802": dui
+    "18 § 2701": simple-assault
+    "18 § 2702": aggravated-assault
+    "18 § 2501": homicide
+    "18 § 2502": homicide
+    "18 § 2503": homicide
+    "18 § 2504": homicide
+    "18 § 2706": terroristic-threats
+    "18 § 3121": sexual-offenses
+    "18 § 3122": sexual-offenses
+    "18 § 3123": sexual-offenses
+    "18 § 3124": sexual-offenses
+    "18 § 3125": sexual-offenses
+    "18 § 3126": sexual-offenses
+    "18 § 3502": burglary
+    "18 § 3503": criminal-trespass
+    "18 § 3701": robbery
+    "18 § 3921": theft
+    "18 § 3922": theft
+    "18 § 3925": theft
+    "18 § 3929": retail-theft
+    "18 § 4101": fraud-forgery
+    "18 § 4106": fraud-forgery
+    "18 § 6105": firearms
+    "18 § 6106": firearms
+    "18 § 6108": firearms
+    "18 § 6110": firearms
+

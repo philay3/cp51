@@ -114,3 +114,24 @@ Entry template:
     dispositions are open charges; 15 sentencing judges, all clean
     "Last, First M." format, no variants; charge_categories.yaml still
     needs its statute-to-category rules.
+
+## 2026-07-02: Phase 4, loader and end to end pipeline
+- Outcome: done
+- Built:
+  - data/lookups/disposition_map.yaml (added ARD - County mapping)
+  - data/lookups/charge_categories.yaml (added statute_map block)
+  - src/db/load.py (database loader class, resolvers, and stats)
+  - scripts/run_pipeline.py (pipeline orchestrator runner)
+  - tests/test_load_helpers.py (helper unit tests)
+- Commands:
+  - `ls data/interim/CP-*.json | wc -l && .venv/bin/python -m pytest tests/ -q && git status -sb && git log --oneline -3`: Preflight checked 31 interim files, 10 passing tests, and git state.
+  - `.venv/bin/python -m pytest tests/ -q`: Ran test suite, 15 tests passed.
+  - `.venv/bin/python -m src.db.load`: Ran first database load. Verified expected counts: 31 cases, 70 charges, 43 sentence components, 15 judges, 31 defendants.
+  - `.venv/bin/python -m src.db.load && PYTHONPATH=. .venv/bin/python scripts/run_pipeline.py && sqlite3 data/processed/phl.db ...`: Ran loader twice and pipeline once. Verified database counts remained identical, proving idempotency.
+  - `sqlite3 -header -column data/processed/phl.db "SELECT ..."`: Ran verification queries to report category and judge distributions.
+- Deviations: none
+- Owner items: none
+- Next agent:
+  - Database is fully loaded with parsed fixture cases.
+  - Idempotency verified.
+  - Ready for Phase 5 (analysis or scale up).

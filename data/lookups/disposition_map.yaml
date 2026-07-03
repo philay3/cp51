@@ -9,6 +9,7 @@ map:
   "Quashed": dismissed
   "Dismissed - LOP": dismissed
   "ARD": diversion
+  "ARD - County": diversion
   "Probation Without Verdict": diversion
   "Guilty Plea - Negotiated": plea
   "Guilty Plea - Non-Negotiated": plea

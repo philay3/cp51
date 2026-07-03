@@ -83,10 +83,14 @@ cp51/
 │   └── processed/            # local only: phl.db and stats releases (stats/v{N}/)
 ├── src/
 │   ├── config.py             # paths, delays, salt, scope constants
+│   ├── identity.py           # the only code touching defendant name/DOB: hash and leak assertion
 │   ├── acquire/              # portal session, search, download
 │   ├── parse/                # pdf to structured records
 │   ├── db/                   # schema.py, session.py, load.py
 │   └── analysis/             # stats, models, stats release builder
+├── tasks/                    # agent protocol: currenttask.md (frozen once dispatched), worklog.md (append-only history)
+├── .agents/rules/            # Antigravity workspace rules, versioned with the repo
+├── .vscode/                  # interpreter pin only; env injection deliberately removed
 ├── notebooks/                # exploration; nothing load-bearing lives here
 ├── scripts/                  # run_pipeline.py and operational entry points
 ├── tests/                    # fixtures are synthetic or fully redacted

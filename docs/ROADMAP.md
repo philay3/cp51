@@ -7,16 +7,20 @@
 
 | # | Phase | Status |
 |---|---|---|
-| 1 | Scaffold | ready to execute |
-| 2 | Acquisition layer | not started |
-| 3 | PDF parser | not started |
-| 4 | Loader and pipeline | not started |
+| 1 | Scaffold | complete (2026-07-02) |
+| 2 | Acquisition layer | partial: fixture fetcher built; scale-up remaining |
+| 3 | PDF parser | complete (2026-07-02) |
+| 4 | Loader and pipeline | next |
 | 5 | Analysis and stats release | not started |
 | 6 | API and forecaster frontend | not started |
 
-Build order note: phase 3 starts on hand-collected dockets before phase 2
-scales, so real progress is never blocked on the scraper. The two can proceed
-in parallel once the parser has fixtures.
+Build order note, now historical: the parser was validated first, on a
+31-docket fixture set collected by a minimal owner-directed fetcher
+(scripts/fetch_fixtures.py: probe mode, politeness delays, cache-first,
+ledger in raw_dockets), so progress was never blocked on the full scraper.
+What remains of phase 2 is hardening that fetcher for the locked window
+(filings 2023 forward, DECISIONS.md D-16): systematic year and sequence
+enumeration, resume from the raw_dockets ledger, and unattended polite runs.
 
 ### Phase 1: Scaffold
 Structure, config, schema v2, environment, first commit.
@@ -44,6 +48,10 @@ sentence components, and sentencing judge with at least 95% field-level
 accuracy against a hand-audited answer key; failures degrade to
 `parse_status=failed` with notes, never silent partial rows; no defendant
 name appears in any interim output.
+
+Met 2026-07-02: 31 of 31 fixtures parsed with zero failures; owner audit
+passed; to_days extended for decimal quantities as printed on real dockets
+("11.00 Months 15.00 Days"); privacy assertion held on every write.
 
 ### Phase 4: Loader and pipeline
 `src/db/load.py` plus `scripts/run_pipeline.py`.

@@ -88,6 +88,22 @@ The parser is validated on hand-collected dockets first. The live portal is
 contacted only in runs the owner explicitly directs, always with the
 randomized delay, never refetching cached dockets.
 
+**D-16 Collection window: filings 2023 forward (2026-07-02).** Resolves O-3,
+superseding the 2019 proposal. Rationale: all rates are computed from
+resolved cases only and CP cases resolve slowly, so a recent-only window
+biases every rate toward fast outcomes; judge thresholds (40 sentenced cases
+per judge per group) need stacked cohorts; 2020-2021 pandemic cohorts are
+deliberately excluded as distorted; the fixture set's wider 2019-2025 spread
+was parser stress-testing only. The window grows forward indefinitely and
+extends backward with a single config change if judge cells run thin.
+
+**D-17 Task protocol (2026-07-02).** One fresh agent per task; the agent's
+world is the workspace rules plus tasks/currenttask.md plus the repo. A
+dispatched task file is frozen; corrections travel as explicit one-line
+diffs, never reissued files. A task is not complete until its entry exists
+in tasks/worklog.md, written before the task's final commit so the commit
+contains it.
+
 ## Open
 
 **O-1 Domain and trademark check for CP51.** Owner action before public use of
@@ -97,12 +113,10 @@ the name.
 shrinkage (transparent, fits the stack). Decide in phase 5 whether a logistic
 mixed model is warranted, which may pull in an extra dependency.
 
-**O-3 Collection window.** Proposed: filings 2019 through present, giving
-pre- and post-pandemic cohorts. Confirm before phase 2 scales.
+**O-3 Collection window.** Resolved 2026-07-02 as D-16: filings 2023 forward.
 
-**O-4 Repo rename.** The build spec says `phl-sentencing-forecaster`; the
-project is now CP51. Recommend creating the repo as `cp51` before the first
-push so the name never has to migrate.
+**O-4 Repo rename.** Resolved: the repository was created as `cp51`
+(github.com/philay3/cp51); the old name never shipped.
 
 **O-5 License.** Undecided. Decide before the repo ever goes public; private
 until then.

@@ -5,11 +5,19 @@ trigger: always_on
 # Workspace rules: cp51
 
 ## Task protocol
-- Your work is defined solely by currenttask.md in the repo root. If it is missing, empty, or self-contradictory, stop and ask; never infer a task.
-- Do exactly what currenttask.md describes, nothing beyond it. When the task is complete or you are blocked, append an entry to worklog.md (format at the top of that file) and stop.
-- Fresh session, no memory: assume you know nothing beyond these rules, currenttask.md, and the repo contents. worklog.md is the project history if you need it.
-- Never modify README.md, docs/, PROJECT-INSTRUCTIONS.md, or currenttask.md unless currenttask.md itself directs it. worklog.md is append-only.
+- Your work is defined solely by tasks/currenttask.md. If it is missing, empty, or self-contradictory, stop and ask; never infer a task.
+- Do exactly what currenttask.md describes, nothing beyond it.
+- Fresh session, no memory: assume you know nothing beyond these rules, tasks/currenttask.md, and the repo contents. tasks/worklog.md is the project history.
+- If the environment does not match the task file's assumptions (runtime version, missing tool, unexpected files), stop and ask before adapting code or configuration.
+- Never modify README.md, docs/, PROJECT-INSTRUCTIONS.md, or tasks/currenttask.md unless the task file itself directs it.
 - No dependencies beyond requirements.txt without asking.
+
+## Worklog is part of the task, not optional
+- A task is NOT complete until its entry exists in tasks/worklog.md. No entry means the task failed its definition of done, regardless of what else was built.
+- Write the entry BEFORE the task's final commit, so the commit contains it. One entry per task, template at the top of the file, appended at the bottom, never editing prior entries.
+- If a task ends early for any reason (blocked, partial, owner halted it, session ending), write the entry first with Outcome: blocked or partial. Ending a session without an entry is never acceptable.
+- Entries contain no defendant names, no docket text, and no em dashes.
+- Before starting any task, read the last worklog entry. If the previous task has no entry, tell the owner before doing anything else.
 
 ## The live portal is off limits by default
 - Never contact the Pennsylvania UJS portal unless the owner explicitly directs that specific run: no Playwright sessions, no test fetches, no connectivity checks, no browser agent visits. Writing scraper code is fine; executing it against the portal is a separate, owner directed event.

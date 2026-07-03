@@ -129,7 +129,7 @@ One row per charge on a docket.
 | category | raw examples |
 |---|---|
 | dismissed | Nolle Prossed, Withdrawn, Dismissed, Quashed, Dismissed LOP |
-| diversion | ARD, Probation Without Verdict, other program dispositions |
+| diversion | ARD, ARD - County, Probation Without Verdict, other program dispositions |
 | plea | Guilty Plea - Negotiated, Guilty Plea - Non-Negotiated, Nolo Contendere |
 | trial_convicted | Guilty (bench or jury verdict) |
 | trial_acquitted | Not Guilty |

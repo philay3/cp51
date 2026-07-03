@@ -84,3 +84,33 @@ Entry template:
   - Playwright and pdfplumber dependencies are correctly configured.
   - Validation set of 31 CP docket sheet PDFs has been successfully acquired in data/raw/ and corresponding metadata is stored in local database.
   - Disposition and sentence keyword coverage summary generated successfully: Nolle Prossed: 1, Withdrawn: 1, Guilty Plea - Negotiated: 16, Guilty Plea - Non-Negotiated: 7, Guilty Plea: 24, Not Guilty: 1, ARD: 1, Confinement: 23, Probation: 25, Jury Trial: 3.
+
+  ## 2026-07-02: Phase 3, docket sheet parser (backfilled by owner)
+- Outcome: done
+- Built:
+  - src/identity.py (hashing, name normalization, privacy leak assertion)
+  - src/parse/helpers.py (dates, length-to-days conversion, grades)
+  - src/parse/docket_parser.py (docket sheet PDF to contract JSON)
+  - scripts/recon_headers.py, scripts/parse_fixtures.py, scripts/build_audit_pack.py
+  - tests/ (helper unit tests)
+  - requirements.txt (pytest added, authorized by the task file)
+  - .agents/rules/workspace.md (worklog gate added)
+  - data/interim/: 31 contract JSON records (local only, gitignored)
+- Commands: summarized; the session ended without an entry so the transcript
+  is not retained. pytest green; recon run over 31 PDFs; parse_fixtures.py
+  parsed 31 of 31 with zero failures (raw_dockets ledger confirms);
+  build_audit_pack.py produced the 10 docket audit pack.
+  - Owner audit: [REPLACE with one line, e.g. "6 corrections in round one, passed in round two"]
+- Deviations:
+  - Entry backfilled by the owner; the session ended without writing it. The
+    worklog gate now in workspace rules exists to prevent recurrence.
+  - to_days extended for decimal quantities as printed on real dockets
+    ("11.00 Months 15.00 Days"); verified correct (345/690 for 11 1/2 to 23).
+- Owner items: none
+- Next agent:
+  - 31 interim JSONs in data/interim/ are the loader input.
+  - Loader inventory: add "ARD - County" to disposition_map.yaml; one
+    concatenated contempt disposition falls to other by design; 18 null
+    dispositions are open charges; 15 sentencing judges, all clean
+    "Last, First M." format, no variants; charge_categories.yaml still
+    needs its statute-to-category rules.

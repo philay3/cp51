@@ -1,4 +1,4 @@
-# Current task: environment repair and fixture acquisition
+# Current task: Phase 3, docket sheet parser
 
 This file is self-contained. Everything needed for this task is here. Do not
 consult other documents to perform it.
@@ -6,340 +6,561 @@ consult other documents to perform it.
 ## Orientation (all the context you need)
 
 CP51 builds a dataset of Philadelphia criminal court outcomes from public
-Court of Common Pleas docket sheets. Phase 1 (scaffold, schema, first commit)
-is done; see tasks/worklog.md. This task does three things: repairs the
-environment (a stray IDE setting and a Python 3.9 runtime), acquires roughly
-30 real docket sheet PDFs as the parser's validation fixtures, and summarizes
-what was fetched. No parsing logic is built in this task.
+Court of Common Pleas docket sheets. 31 fixture PDFs are already on disk in
+data/raw/ (gitignored, local only), fetched in the previous task. This task
+builds the parser that turns each PDF into one structured JSON record,
+validates it against all 31 fixtures, and produces an audit pack the owner
+checks by hand. No portal contact of any kind in this task. No database
+loading (that is phase 4).
 
 ## Ground rules
 
 - **Commands are ask-first.** Present the exact command(s) with a one line
   reason, stop, and wait. Related commands may be grouped as one logical
-  block per ask. Never assume an outcome you have not seen.
-- **Portal authorization, scoped to this task.** The owner directs the
-  following and nothing more: up to 3 single-docket probe lookups, then one
-  batch run capped at 60 lookups total. Every lookup is separated by the
-  randomized MIN_DELAY to MAX_DELAY sleep, success or failure. If anything
-  suggests blocking (repeated failures, challenge pages), stop immediately
-  and report. No other portal contact of any kind.
-- **Privacy.** Docket PDFs contain defendant names. Never print, log, or
-  commit extracted docket text. PDFs stay in data/raw/, which is gitignored.
-  Never read, print, or verify the value of DEFENDANT_HASH_SALT.
+  block per ask. Run all python through .venv/bin/python.
+- **Privacy, critical for this task.** The PDFs contain defendant names,
+  dates of birth, and sometimes other personal names. Extracted text lives
+  in memory only. Never print, log, or write extracted docket text anywhere
+  except the whitelisted fields in the JSON schema below. Console output is
+  docket numbers, counts, field names, and statuses only. The defendant's
+  name and DOB exist transiently to compute a hash and are then discarded;
+  a provided assertion verifies neither appears in any output file, and a
+  failed assertion is a hard stop, not a warning. Free-text sentence
+  conditions are NOT captured in v1 because conditions sometimes name
+  people. ParseError messages name a section or field; they never quote
+  docket text.
+- **If the environment does not match this file's assumptions** (missing
+  venv, wrong Python, unexpected files), stop and ask before adapting.
 - **No em dashes anywhere.** Code, comments, commits, worklog entries.
 - **Do not modify** README.md, docs/, PROJECT-INSTRUCTIONS.md, or this file.
   Report in tasks/worklog.md, append-only, format at the top of that file.
 
-## Step 0: remove the env-injection setting
+## Step 0: preflight
 
-1. Delete .vscode/settings.json (it enables terminal environment file
-   injection, which would surface .env values, including the salt, in every
-   IDE terminal; config.py already loads .env at runtime so nothing needs it).
-   If the file contains unrelated settings, remove only the env injection
-   keys and say so in the worklog.
-2. Append this block to .gitignore:
-
-```gitignore
-
-# IDE
-.vscode/
-```
-
-3. Then tell the owner: "Step 0 done, safe to set the salt now." The owner
-   sets it out of band. Never ask what it is. You may confirm it is set with
-   exactly this command and nothing else (it prints no values):
+Verify, with approval:
 
 ```bash
-grep -q "set-a-long-random-string-here" .env && echo "salt NOT set yet" || echo "salt set"
+.venv/bin/python --version
+ls data/raw/*.pdf | wc -l
+git log --oneline -3
 ```
 
-## Step 1: rebuild the runtime on Python 3.12+
+Expect Python 3.12.x and 31 PDFs. If the most recent commit does not include
+the fixture scripts from the previous task, commit them first ("Add fixture
+acquisition scripts and environment repair") before any new work.
 
-Python 3.9 is end of life and the phase 5 analysis stack (current scipy and
-statsmodels) no longer supports it. Keep the typing.Optional annotations in
-schema.py exactly as they are (they run everywhere); only the interpreter
-changes.
+Then append pytest to requirements.txt (this task authorizes the addition)
+and install it:
 
-Check what exists:
+```text
+pytest>=8.0
+```
 
 ```bash
-python3.13 --version || python3.12 --version
+.venv/bin/pip install -r requirements.txt
 ```
 
-If neither is present, propose (flag it as a system-level install):
+## The output contract (interim JSON)
 
-```bash
-brew install python@3.12
+One file per docket at data/interim/{docket_number}.json, exactly this
+shape. Unknown values are null, never guessed. An open case (no disposition
+yet) is a SUCCESS with null dispositions and empty sentence lists, not a
+failure. Dates are ISO YYYY-MM-DD strings or null.
+
+```json
+{
+  "docket_number": "CP-51-CR-0000000-2024",
+  "parser_version": 1,
+  "parsed_at": "2026-07-02T12:00:00",
+  "case": {
+    "county": "Philadelphia",
+    "court_type": "Common Pleas",
+    "case_status": "Closed",
+    "filed_date": "2024-03-14",
+    "otn": "U1234567",
+    "assigned_judge_raw": "Example, Anne",
+    "defendant_hash": "64 hex chars"
+  },
+  "charges": [
+    {
+      "sequence": 1,
+      "statute": "35 § 780-113 §§ A16",
+      "grade": "M",
+      "offense": "Int Poss Contr Subst By Per Not Reg",
+      "disposition_raw": "Guilty Plea - Negotiated",
+      "disposition_date": "2024-09-02",
+      "disposition_judge_raw": "Example, Anne",
+      "sentences": [
+        {
+          "sentence_type": "Probation",
+          "min_days": 360,
+          "max_days": 360,
+          "program": "Probation 12 Months",
+          "sentence_date": "2024-09-02",
+          "raw_text": "Min of 12 Months, Max of 12 Months"
+        }
+      ]
+    }
+  ],
+  "notes": []
+}
 ```
 
-Then rebuild the environment (adjust python3.12 to whichever version exists):
+Rules: raw_text on a sentence captures the type and length line only, never
+conditions. notes[] records anything odd (legacy layout, unreadable section,
+name-collision on the privacy assertion) in the parser's own words, never
+quoting the PDF.
 
-```bash
-rm -rf .venv
-python3.12 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-playwright install chromium
-python -m src.db.session
-python -c "import sqlalchemy, pdfplumber, yaml, playwright; import sys; print('env ok on', sys.version)"
-```
+## Step 1: shared helpers (exact contents)
 
-## Step 2: create the fixture fetcher (exact contents)
-
-### scripts/fetch_fixtures.py
+### src/identity.py
 
 ```python
 """
-Fixture acquisition: fetch a small, polite batch of Philadelphia CP docket
-sheet PDFs to serve as the parser's validation set.
-
-Standalone by design; phase 2 proper refactors this into src/acquire/.
-Run only when the owner directs it. Politeness is not optional: a randomized
-MIN_DELAY to MAX_DELAY sleep separates every attempt, success or failure.
-
-Usage:
-  python scripts/fetch_fixtures.py --probe   # exactly one known docket
-  python scripts/fetch_fixtures.py           # batch: stop at 30 saved or 60 tries
+Pseudonymous identity: the only code that ever touches a defendant name or
+DOB. The parser (phase 3) and the loader (phase 4) both import from here so
+the hash is identical everywhere. Names exist in memory only; nothing in
+this module logs, prints, or stores them.
 """
 
 from __future__ import annotations
 
-import random
-import sys
-import time
-from datetime import datetime
-from pathlib import Path
+import hashlib
+import re
 
-from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
-
-from src.config import MIN_DELAY, MAX_DELAY, RAW_DIR, INTERIM_DIR
-from src.db.session import SessionLocal, init_db
-from src.db.schema import RawDocket
-
-PORTAL = "https://ujsportal.pacourts.us/CaseSearch"
-PROBE_DOCKET = "CP-51-CR-0000001-2023"
-
-TARGET_SAVED = 30   # stop after this many PDFs are on disk
-MAX_ATTEMPTS = 60   # hard cap on portal lookups for this run
-YEARS = [2019, 2020, 2021, 2022, 2023, 2024, 2025]
-SEQ_RANGE = (1, 6000)  # conservative; Philadelphia files far more per year
+from src.config import DEFENDANT_HASH_SALT
 
 
-def candidate_dockets(n: int) -> list[str]:
-    """Spread candidates across years with random sequences, no duplicates.
+def normalize_name(name: str) -> str:
+    lowered = name.lower()
+    letters_only = re.sub(r"[^a-z\s]", " ", lowered)
+    return re.sub(r"\s+", " ", letters_only).strip()
 
-    Seeded so a re-run proposes the same batch and cached hits are skipped.
+
+def hash_defendant(name: str, birth_year: int) -> str:
+    basis = f"{DEFENDANT_HASH_SALT}|{normalize_name(name)}|{birth_year}"
+    return hashlib.sha256(basis.encode("utf-8")).hexdigest()
+
+
+def assert_no_leak(sentinels: list[str], text: str) -> None:
+    """Hard stop if any identifying string appears in output text.
+
+    Sentinels are the defendant's printed name, its parts, and the DOB
+    string. A collision (for example, a defendant who shares a surname with
+    the judge) raises too; that is intentional. Investigate, record the
+    collision in notes, and require owner confirmation before writing.
     """
-    rng = random.Random(51)
-    seen: set[str] = set()
-    out: list[str] = []
-    while len(out) < n:
-        year = rng.choice(YEARS)
-        seq = rng.randint(*SEQ_RANGE)
-        docket = f"CP-51-CR-{seq:07d}-{year}"
-        if docket not in seen:
-            seen.add(docket)
-            out.append(docket)
-    return out
-
-
-def polite_sleep() -> None:
-    time.sleep(random.uniform(MIN_DELAY, MAX_DELAY))
-
-
-def fetch_docket_pdf(page, docket: str) -> bytes | None:
-    """Search one docket number; return the docket sheet PDF bytes or None."""
-    page.goto(PORTAL, wait_until="networkidle")
-    page.get_by_label("Search By").select_option(label="Docket Number")
-    page.get_by_label("Docket Number").fill(docket)
-    page.get_by_role("button", name="Search").click()
-    page.wait_for_load_state("networkidle")
-
-    # The results row exposes a docket sheet link whose href carries a
-    # one-time hash, so capture the href and fetch it inside this session.
-    links = page.locator("a[href*='CpDocketSheet']")
-    if links.count() == 0:
-        return None
-    href = links.first.get_attribute("href")
-    if not href:
-        return None
-    url = href if href.startswith("http") else f"https://ujsportal.pacourts.us{href}"
-    resp = page.context.request.get(url)
-    if not resp.ok:
-        return None
-    body = resp.body()
-    if not body.startswith(b"%PDF"):
-        return None
-    return body
-
-
-def main() -> None:
-    probe = "--probe" in sys.argv
-    init_db()
-    session = SessionLocal()
-    saved = 0
-    attempts = 0
-    target = 1 if probe else TARGET_SAVED
-    candidates = [PROBE_DOCKET] if probe else candidate_dockets(MAX_ATTEMPTS)
-
-    with sync_playwright() as p:
-        # Headful on purpose: friendlier to the portal's bot checks.
-        browser = p.chromium.launch(headless=False)
-        page = browser.new_page()
-        for docket in candidates:
-            if saved >= target or attempts >= MAX_ATTEMPTS:
-                break
-            out_path = RAW_DIR / f"{docket}.pdf"
-            if out_path.exists():
-                print(f"cached, skipping: {docket}")
-                continue
-            attempts += 1
-            try:
-                pdf = fetch_docket_pdf(page, docket)
-            except PWTimeout:
-                pdf = None
-            except Exception as exc:  # keep the run alive; log type only
-                print(f"error on {docket}: {type(exc).__name__}")
-                pdf = None
-            if pdf:
-                out_path.write_bytes(pdf)
-                saved += 1
-                session.merge(RawDocket(
-                    docket_number=docket,
-                    pdf_path=str(out_path),
-                    fetched_at=datetime.now(),
-                    parse_status="pending",
-                    notes="fixture batch 1",
-                ))
-                session.commit()
-                print(f"saved {saved}: {docket}")
-            else:
-                print(f"no docket sheet: {docket}")
-                if probe:
-                    shot = INTERIM_DIR / "probe_failure.png"
-                    page.screenshot(path=str(shot), full_page=True)
-                    print(f"screenshot saved: {shot}")
-            polite_sleep()
-        browser.close()
-    session.close()
-    print(f"done: {saved} saved, {attempts} attempts")
-
-
-if __name__ == "__main__":
-    main()
+    low = text.lower()
+    for s in sentinels:
+        s = s.strip()
+        if len(s) >= 3 and s.lower() in low:
+            raise RuntimeError(
+                "privacy assertion failed: identifying string found in output"
+            )
 ```
 
-### scripts/fixture_summary.py
+### src/parse/helpers.py
 
 ```python
-"""
-Coverage summary for fixture PDFs: which disposition and sentence keywords
-appear in each docket, so fixture variety can be judged at a glance.
-
-Heuristic only ("Guilty Plea" also contains "Guilty"; treat counts as
-approximate). Prints docket numbers and matched keywords ONLY. Never prints
-extracted docket text: docket sheets contain defendant names and this
-project keeps names out of consoles, logs, and files.
-"""
+"""Small, deterministic parsing helpers, unit tested before any PDF work."""
 
 from __future__ import annotations
 
-from collections import Counter
+import re
+from datetime import datetime
+
+GRADES = {"F1", "F2", "F3", "F", "M1", "M2", "M3", "M", "S", "H1", "H2"}
+
+
+class ParseError(Exception):
+    """Raised when a docket cannot be parsed. Messages name the section or
+    field only; they never quote docket text."""
+
+
+def parse_date(text: str | None) -> str | None:
+    if not text:
+        return None
+    text = text.strip()
+    for fmt in ("%m/%d/%Y", "%m/%d/%y"):
+        try:
+            return datetime.strptime(text, fmt).date().isoformat()
+        except ValueError:
+            continue
+    return None
+
+
+_UNIT_DAYS = {"year": 360, "years": 360, "month": 30,
+              "months": 30, "day": 1, "days": 1}
+
+
+def to_days(length_text: str | None) -> int | None:
+    """Convert '11 1/2 Months', '1 Year 6 Months', '90 Days' to days.
+
+    Rule: year = 360, month = 30, half = 0.5 of the unit. Returns None when
+    nothing parses (for example 'Life'); the caller keeps raw_text so
+    nothing is lost.
+    """
+    if not length_text:
+        return None
+    length_text = length_text.replace("\u00bd", " 1/2")
+    total = 0.0
+    found = False
+    pattern = re.compile(r"(\d+)(\s*1/2)?\s+(years?|months?|days?)",
+                         re.IGNORECASE)
+    for m in pattern.finditer(length_text):
+        qty = float(m.group(1))
+        if m.group(2):
+            qty += 0.5
+        total += qty * _UNIT_DAYS[m.group(3).lower()]
+        found = True
+    return int(round(total)) if found else None
+```
+
+## Step 2: unit tests (exact contents)
+
+### tests/test_helpers.py
+
+```python
+import pytest
+
+from src.identity import assert_no_leak, hash_defendant, normalize_name
+from src.parse.helpers import parse_date, to_days
+
+
+def test_parse_date():
+    assert parse_date("03/14/2024") == "2024-03-14"
+    assert parse_date("") is None
+    assert parse_date("garbage") is None
+
+
+def test_to_days_simple():
+    assert to_days("23 Months") == 690
+
+
+def test_to_days_compound():
+    assert to_days("1 Year 6 Months") == 545
+
+
+def test_to_days_half():
+    assert to_days("11 1/2 Months") == 345
+
+
+def test_to_days_unicode_half():
+    assert to_days("11\u00bd Months") == 345
+
+
+def test_to_days_days_only():
+    assert to_days("90 Days") == 90
+
+
+def test_to_days_unparseable():
+    assert to_days("Life") is None
+
+
+def test_normalize_name():
+    assert normalize_name("  O'Brien,  Patrick J. ") == "o brien patrick j"
+
+
+def test_hash_deterministic():
+    assert hash_defendant("Smith, John", 1990) == hash_defendant("smith  john", 1990)
+
+
+def test_leak_assertion_trips():
+    with pytest.raises(RuntimeError):
+        assert_no_leak(["Smith"], '{"judge": "smith, anne"}')
+```
+
+Run them:
+
+```bash
+.venv/bin/python -m pytest tests/ -q
+```
+
+All green before touching a PDF.
+
+## Step 3: reconnaissance (exact contents)
+
+Ground the extraction in the real layouts before writing it. This prints
+only our own constant strings and counts.
+
+### scripts/recon_headers.py
+
+```python
+"""Report which known section headers each fixture contains. Prints only
+our own constants and counts, never PDF text."""
+
+from __future__ import annotations
 
 import pdfplumber
 
 from src.config import RAW_DIR
 
-KEYWORDS = [
-    "Nolle Prossed", "Withdrawn", "Dismissed",
-    "Guilty Plea - Negotiated", "Guilty Plea - Non-Negotiated",
-    "Guilty Plea", "Nolo Contendere", "Not Guilty", "ARD",
-    "Probation Without Verdict", "Confinement", "Probation",
-    "Jury Trial", "Bench Trial", "Migrated",
+HEADERS = [
+    "CASE INFORMATION",
+    "STATUS INFORMATION",
+    "CALENDAR EVENTS",
+    "DEFENDANT INFORMATION",
+    "CHARGES",
+    "DISPOSITION SENTENCING/PENALTIES",
+    "COMMONWEALTH INFORMATION",
+    "ATTORNEY INFORMATION",
+    "ENTRIES",
 ]
 
 
 def main() -> None:
-    totals: Counter = Counter()
-    pdfs = sorted(RAW_DIR.glob("*.pdf"))
-    for path in pdfs:
-        try:
-            with pdfplumber.open(path) as pdf:
-                text = "\n".join((pg.extract_text() or "") for pg in pdf.pages)
-        except Exception as exc:
-            print(f"{path.stem}: unreadable ({type(exc).__name__})")
-            continue
-        hits = [k for k in KEYWORDS if k in text]
-        for k in hits:
-            totals[k] += 1
-        print(f"{path.stem}: {', '.join(hits) if hits else 'no keywords found'}")
-    print(f"\ncoverage across {len(pdfs)} dockets:")
-    for k in KEYWORDS:
-        print(f"  {k}: {totals[k]}")
+    for path in sorted(RAW_DIR.glob("*.pdf")):
+        with pdfplumber.open(path) as pdf:
+            n_pages = len(pdf.pages)
+            text = "\n".join((p.extract_text() or "") for p in pdf.pages)
+        missing = [h for h in HEADERS if h not in text]
+        print(f"{path.stem}: pages={n_pages} "
+              f"missing={', '.join(missing) if missing else 'none'}")
 
 
 if __name__ == "__main__":
     main()
 ```
 
-## Step 3: probe run (one docket)
+Run it, report the output, and adjust the header list if reality differs.
+If any docket is missing CHARGES or CASE INFORMATION entirely, flag it as a
+likely legacy layout and plan to fail it gracefully rather than force it.
 
-Run, with owner approval:
+## Step 4: the parser
 
-```bash
-python scripts/fetch_fixtures.py --probe
+### src/parse/docket_parser.py
+
+Contract, fixed:
+
+```python
+def parse_docket(pdf_path: Path) -> tuple[dict, list[str]]:
+    """Parse one docket sheet PDF.
+
+    Returns (record, sentinels): record matches the JSON contract above;
+    sentinels are the transient identifying strings (printed name, name
+    parts, DOB text) for the caller's privacy assertion. Raises ParseError
+    when the sheet cannot be read; error messages never quote docket text.
+    """
 ```
 
-- If it saves the PDF: proceed to step 4.
-- If it fails: read data/interim/probe_failure.png, adjust the selectors in
-  fetch_docket_pdf to match what the page actually shows, and probe again.
-  Maximum 3 probes total. If still failing after 3, stop, write a blocked
-  worklog entry describing exactly what the page showed, and end the task.
+Extraction targets, section by section:
 
-## Step 4: batch run
+| Section | Field | Lands in |
+|---|---|---|
+| Header/caption | docket number | docket_number (must equal filename stem) |
+| CASE INFORMATION | Judge Assigned | case.assigned_judge_raw |
+| CASE INFORMATION | Date Filed | case.filed_date |
+| CASE INFORMATION | OTN | case.otn |
+| STATUS INFORMATION | Case Status | case.case_status |
+| DEFENDANT INFORMATION | name + DOB | case.defendant_hash only, via src.identity |
+| CHARGES table | Seq, Grade, Statute, Statute Description | charges[].sequence, .grade, .statute, .offense |
+| DISPOSITION SENTENCING/PENALTIES | per-charge offense disposition | charges[].disposition_raw |
+| DISPOSITION SENTENCING/PENALTIES | disposition event date | charges[].disposition_date |
+| DISPOSITION SENTENCING/PENALTIES | Sentencing Judge per event | charges[].disposition_judge_raw |
+| DISPOSITION SENTENCING/PENALTIES | sentence components (type, program, Min of X Max of Y, date) | charges[].sentences[] via to_days |
 
-Run, with owner approval:
+Method, in order: build against three dockets first
+(CP-51-CR-0001746-2022 for a clean negotiated plea, CP-51-CR-0000063-2024
+for ARD, CP-51-CR-0005412-2023 for a jury trial with mixed outcomes), get
+those three producing contract-valid JSON, then run the full batch. Never
+guess: a field that cannot be located is null plus a notes[] entry. Grades
+outside GRADES are kept as extracted and noted. Continuation pages repeat
+headers; stitch by section, not by page.
 
-```bash
-python scripts/fetch_fixtures.py
+## Step 5: batch runner (exact contents)
+
+### scripts/parse_fixtures.py
+
+```python
+"""Batch-parse every fixture PDF into interim JSON. Console output is
+docket numbers, counts, and statuses only, never extracted text."""
+
+from __future__ import annotations
+
+import json
+
+from src.config import INTERIM_DIR, RAW_DIR
+from src.db.schema import RawDocket
+from src.db.session import SessionLocal, init_db
+from src.identity import assert_no_leak
+from src.parse.docket_parser import parse_docket
+from src.parse.helpers import ParseError
+
+
+def main() -> None:
+    init_db()
+    session = SessionLocal()
+    pdfs = sorted(RAW_DIR.glob("*.pdf"))
+    ok = failed = 0
+    print(f"{'docket':34} {'status':7} {'charges':>7} {'sentenced':>9} {'judge':>5}")
+    for path in pdfs:
+        docket = path.stem
+        status, note = "parsed", None
+        try:
+            record, sentinels = parse_docket(path)
+            text = json.dumps(record, indent=2, ensure_ascii=False)
+            assert_no_leak(sentinels, text)
+            (INTERIM_DIR / f"{docket}.json").write_text(text)
+            n_ch = len(record["charges"])
+            n_sent = sum(1 for c in record["charges"] if c["sentences"])
+            has_judge = any(c["disposition_judge_raw"] for c in record["charges"])
+            ok += 1
+            print(f"{docket:34} {status:7} {n_ch:>7} {n_sent:>9} "
+                  f"{'y' if has_judge else 'n':>5}")
+        except (ParseError, RuntimeError) as exc:
+            status, note = "failed", f"{type(exc).__name__}: {exc}"
+            failed += 1
+            print(f"{docket:34} {status:7} {'-':>7} {'-':>9} {'-':>5}")
+        row = session.get(RawDocket, docket) or RawDocket(docket_number=docket)
+        row.pdf_path = str(path)
+        row.parse_status = status
+        row.notes = note
+        session.merge(row)
+        session.commit()
+    session.close()
+    print(f"\ndone: {ok} parsed, {failed} failed of {len(pdfs)}")
+
+
+if __name__ == "__main__":
+    main()
 ```
 
-Expect a slow run by design (30 saves at 3 to 7 seconds between lookups,
-plus misses). Report the final "saved / attempts" line.
-
-## Step 5: coverage summary
+Run with approval:
 
 ```bash
-python scripts/fixture_summary.py
+.venv/bin/python scripts/parse_fixtures.py
 ```
 
-Paste the summary output (docket numbers and keywords only) into the chat
-and include the coverage totals in the worklog entry. If fewer than 20 PDFs
-saved, say so; the owner decides whether to direct a second batch.
+Target: 31 of 31 parsed (open cases count as parsed). Anything failed gets
+investigated; if it is a genuine legacy layout, failed-with-notes is an
+acceptable final state for at most 2 dockets, recorded in the worklog.
 
-## Step 6: worklog, commit, push
+## Step 6: audit pack (exact contents)
 
-Append the worklog entry first (format at the top of tasks/worklog.md), then,
-with approval:
+### scripts/build_audit_pack.py
+
+```python
+"""Build the human audit pack: 10 stratified dockets with every extracted
+field laid out for side-by-side checking against the PDFs. Contains no
+names; the defendant appears only as a truncated hash."""
+
+from __future__ import annotations
+
+import json
+
+from src.config import INTERIM_DIR
+
+AUDIT_DOCKETS = [
+    "CP-51-CR-0000063-2024",
+    "CP-51-CR-0005412-2023",
+    "CP-51-CR-0003972-2019",
+    "CP-51-CR-0003400-2022",
+    "CP-51-CR-0002515-2025",
+    "CP-51-CR-0000267-2021",
+    "CP-51-CR-0000871-2019",
+    "CP-51-CR-0001746-2022",
+    "CP-51-CR-0004427-2025",
+    "CP-51-CR-0003030-2020",
+]
+
+HEADER = """# CP51 parser audit pack
+
+Owner instructions: for each docket below, open the matching PDF at
+data/raw/{docket}.pdf side by side with this file. Check every field line
+against the PDF. If a line is wrong, change its [ ] to [x] and write the
+correct value after it. Expect roughly 6 minutes per docket. When done,
+report only the [x] lines (docket, field, correct value). Do not paste any
+names anywhere.
+"""
+
+
+def line(label: str, value) -> str:
+    shown = value if value not in (None, [], "") else "(null)"
+    return f"- [ ] {label}: {shown}\n"
+
+
+def main() -> None:
+    out = [HEADER]
+    audit_dir = INTERIM_DIR / "audit"
+    audit_dir.mkdir(parents=True, exist_ok=True)
+    for docket in AUDIT_DOCKETS:
+        path = INTERIM_DIR / f"{docket}.json"
+        if not path.exists():
+            out.append(f"\n## {docket}\n\nNOT PARSED, see raw_dockets.notes\n")
+            continue
+        rec = json.loads(path.read_text())
+        case = rec["case"]
+        out.append(f"\n## {docket}\n\n")
+        out.append(line("case_status", case["case_status"]))
+        out.append(line("filed_date", case["filed_date"]))
+        out.append(line("otn", case["otn"]))
+        out.append(line("assigned_judge_raw", case["assigned_judge_raw"]))
+        out.append(line("defendant_hash (first 8)",
+                        (case["defendant_hash"] or "")[:8]))
+        for c in rec["charges"]:
+            out.append(f"\n### charge seq {c['sequence']}\n")
+            out.append(line("statute", c["statute"]))
+            out.append(line("grade", c["grade"]))
+            out.append(line("offense", c["offense"]))
+            out.append(line("disposition_raw", c["disposition_raw"]))
+            out.append(line("disposition_date", c["disposition_date"]))
+            out.append(line("disposition_judge_raw", c["disposition_judge_raw"]))
+            for i, s in enumerate(c["sentences"], 1):
+                out.append(line(f"sentence {i} type", s["sentence_type"]))
+                out.append(line(f"sentence {i} min_days", s["min_days"]))
+                out.append(line(f"sentence {i} max_days", s["max_days"]))
+                out.append(line(f"sentence {i} date", s["sentence_date"]))
+    (audit_dir / "audit_pack.md").write_text("".join(out))
+    print(f"audit pack written: {audit_dir / 'audit_pack.md'}")
+
+
+if __name__ == "__main__":
+    main()
+```
+
+Run with approval, then hand off to the owner:
+
+```bash
+.venv/bin/python scripts/build_audit_pack.py
+open data/interim/audit/audit_pack.md
+```
+
+## Step 7: the owner audit and the fix loop
+
+Tell the owner, in these words: "The audit pack is ready. Your job
+[yours, once this task, about an hour]: open the pack, check each docket's
+fields against its PDF, mark wrong lines with [x] plus the correct value,
+then paste me only the [x] lines. No names in the paste."
+
+When corrections come back: fix the parser, re-run steps 5 and 6, and ask
+the owner to re-check only the previously wrong fields. Repeat until the
+owner reports 95% or more of checked fields correct. Wrong values found on
+open-case dockets count too; nulls that should be nulls count as correct.
+
+## Step 8: worklog, commit, push
+
+Append the worklog entry (include: parse totals, audit pass rate, any
+failed-with-notes dockets, deviations). Then, with approval:
 
 ```bash
 git add .
 git status
-git commit -m "Repair environment and add fixture acquisition scripts"
+git commit -m "Add docket sheet parser with fixture validation and audit pack"
 git push
 ```
 
 Confirm in git status that nothing under data/ is staged except
-data/lookups/ (PDFs and the database are gitignored and must stay local).
+data/lookups/ (interim JSON and PDFs stay local).
 
 ## Definition of done
 
-- .vscode env injection removed and .vscode/ gitignored.
-- Owner confirmed able to set the salt (its value never touched or shown).
-- .venv rebuilt on Python 3.12 or newer; env ok check passed.
-- Both scripts created with exactly the given contents (selector fixes from
-  the probe step are the one permitted deviation; note them in the worklog).
-- Probe succeeded; batch run completed within the 60 lookup cap.
-- Coverage summary produced with keywords only, no docket text.
-- Worklog entry appended; one commit pushed; no PDFs or database committed.
-- Stop. No parser code, no further portal contact.
+- Helpers and tests in place; pytest green.
+- Reconnaissance run and reported; extraction grounded in real layouts.
+- All 31 fixtures parsed or failed-with-notes (at most 2 failures, legacy
+  layouts only); zero silent failures.
+- Every interim JSON matches the contract; privacy assertion enforced on
+  every write; no name or DOB anywhere in any output or console line.
+- Audit pack delivered; owner audit completed; 95% or more of checked
+  fields correct after the fix loop.
+- Worklog appended; one commit pushed; no loader work, no portal contact.
+- Stop.

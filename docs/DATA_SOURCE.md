@@ -1,8 +1,8 @@
 # Data source
 
-> Status: target design. Describes the source as understood before parsing
-> begins; the docket anatomy below is confirmed and refined against the phase 3
-> fixture set. Last updated 2026-07-02.
+> Status: validated. The anatomy and quirks below were confirmed against the
+> 31-docket phase 3 fixture set; items marked "confirmed" are observed fact,
+> not expectation. Last updated 2026-07-02.
 
 ## Source
 
@@ -39,6 +39,9 @@ it is why the acquire and parse layers are the moat as well as the cost.
 - **Fallback.** If automated access is blocked, the alternative path is a
   formal bulk data request to the Administrative Office of Pennsylvania
   Courts.
+- **Window.** Systematic collection covers filings 2023 forward
+  (DECISIONS.md D-16), enumerated by year and sequence, growing forward
+  indefinitely and extendable backward by config alone.
 
 ## Anatomy of a docket sheet
 
@@ -101,6 +104,24 @@ sections. The ones the parser cares about, in the order they appear:
   the docket in raw_dockets.notes rather than failing.
 - **Pending cases.** Open cases have charges with no disposition. They load
   normally and are excluded from outcome denominators (METHODOLOGY.md).
+
+## Confirmed by the phase 3 fixture set
+
+- **Decimal quantities in sentence lengths.** Real dockets print
+  "Min of 11.00 Months 15.00 Days"; to_days handles decimals (confirmed:
+  345/690 days for an 11 1/2 to 23 month sentence).
+- **Disposition variants.** "ARD - County" appears alongside bare "ARD";
+  the disposition map matches exact strings only, never substrings ("Not
+  Guilty" contains "Guilty"). Occasional concatenated multi-part
+  disposition strings occur and fall to `other` by design.
+- **OTNs can contain spaces** ("U 268081-2" style); stored as printed.
+- **Case status values observed:** Closed, Active, Inactive.
+- **Judge names arrive clean.** All fixture sentencing judges print as
+  "Last, First M." with zero variants observed; alias resolution starts
+  easy and the override map stays empty until reality demands otherwise.
+- **Portal DOM has no label tags.** Search controls are located by title
+  and name attributes, not labels; the docket sheet link carries a one-time
+  hash and must be fetched inside the same browser session.
 
 ## Secondary source, parked
 

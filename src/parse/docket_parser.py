@@ -21,6 +21,16 @@ HEADERS = [
     "ENTRIES",
 ]
 
+DISPO_SKIP_HEADERS = {
+    "DISPOSITION SENTENCING/PENALTIES",
+    "Disposition",
+    "Case Event Disposition Date Final Disposition",
+    "Sequence/Description Offense Disposition Grade Section",
+    "Sentencing Judge Sentence Date Credit For Time Served",
+    "Sentence/Diversion Program Type Incarceration/Diversionary Period Start Date",
+    "Sentence Conditions"
+}
+
 
 def is_statute_token(tok: str) -> bool:
     tok_clean = tok.strip()
@@ -283,6 +293,8 @@ def parse_docket(pdf_path: Path) -> tuple[dict, list[str]]:
     current_charge_seq = None
     expecting_judge_line = False
     current_sentence_comp = None
+    in_valid_event = False
+    current_event_name = ""
 
     def save_current_sentence():
         nonlocal current_sentence_comp
@@ -328,6 +340,9 @@ def parse_docket(pdf_path: Path) -> tuple[dict, list[str]]:
         if not line_str:
             continue
             
+        if line_str in DISPO_SKIP_HEADERS:
+            continue
+            
         # Check if the next line is an event date line (lookahead)
         is_event_header = False
         if idx + 1 < len(disposition_lines):
@@ -338,16 +353,25 @@ def parse_docket(pdf_path: Path) -> tuple[dict, list[str]]:
         if is_event_header:
             save_current_sentence()
             current_charge_seq = None
+            current_event_name = line_str
             continue
             
-        if re.search(r"(Final Disposition|Not Final)$", line_str):
+        date_line_match = re.search(r"(Final Disposition|Not Final)$", line_str)
+        if date_line_match:
             save_current_sentence()
             current_charge_seq = None
+            if date_line_match.group(1) == "Final Disposition" or "ard" in current_event_name.lower():
+                in_valid_event = True
+            else:
+                in_valid_event = False
             continue
             
         charge_match = re.match(r"^(\d+)\s*/\s*(.*)$", line_str)
         if charge_match:
             save_current_sentence()
+            if not in_valid_event:
+                current_charge_seq = None
+                continue
             seq = int(charge_match.group(1))
             current_charge_seq = seq
             expecting_judge_line = True
@@ -424,14 +448,6 @@ def parse_docket(pdf_path: Path) -> tuple[dict, list[str]]:
                     save_current_sentence()
 
     save_current_sentence()
-
-    # Null out dispositions and sentences for active cases
-    if case_status == "Active":
-        for charge in parsed_charges.values():
-            charge["disposition_raw"] = None
-            charge["disposition_date"] = None
-            charge["disposition_judge_raw"] = None
-            charge["sentences"] = []
 
     # Format charges as list
     charges_list = sorted(list(parsed_charges.values()), key=lambda x: x["sequence"])

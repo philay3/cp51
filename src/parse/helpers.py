@@ -41,7 +41,7 @@ def to_days(length_text: str | None) -> int | None:
     length_text = length_text.replace("\u00bd", " 1/2")
     total = 0.0
     found = False
-    pattern = re.compile(r"(\d+)(\s*1/2)?\s+(years?|months?|days?)",
+    pattern = re.compile(r"(\d+(?:\.\d+)?)(\s*1/2)?\s+(years?|months?|days?)",
                          re.IGNORECASE)
     for m in pattern.finditer(length_text):
         qty = float(m.group(1))

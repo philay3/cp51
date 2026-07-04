@@ -26,3 +26,8 @@ TARGET_COURT_TYPE = "Common Pleas"
 
 # Salt for pseudonymous defendant hashing. Set a real value in .env, never commit it.
 DEFENDANT_HASH_SALT = os.getenv("DEFENDANT_HASH_SALT", "change-me-in-env")
+
+# Collection window (DECISIONS.md D-16): filings 2023 forward, extendable
+# backward by changing this value alone.
+COLLECTION_START_YEAR = int(os.getenv("COLLECTION_START_YEAR", "2023"))
+

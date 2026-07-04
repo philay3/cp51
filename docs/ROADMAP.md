@@ -8,9 +8,9 @@
 | # | Phase | Status |
 |---|---|---|
 | 1 | Scaffold | complete (2026-07-02) |
-| 2 | Acquisition layer | partial: fixture fetcher built; scale-up remaining |
+| 2 | Acquisition layer | collector hardened (2026-07-02); collection running owner-paced |
 | 3 | PDF parser | complete (2026-07-02) |
-| 4 | Loader and pipeline | next |
+| 4 | Loader and pipeline | complete (2026-07-02) |
 | 5 | Analysis and stats release | not started |
 | 6 | API and forecaster frontend | not started |
 
@@ -62,6 +62,8 @@ ambiguity; disposition mapping covers at least 98% of fixture dispositions
 with the remainder visible as `other`; defendant hashing verified (same
 person, same hash; no name at rest anywhere); re-running the pipeline is a
 no-op.
+
+Met 2026-07-02: fixture set loaded with expected counts; idempotency proven by repeated runs.
 
 ### Phase 5: Analysis and stats release
 Everything in METHODOLOGY.md, ending in `stats/v1/`.

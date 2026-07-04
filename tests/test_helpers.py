@@ -45,3 +45,13 @@ def test_hash_deterministic():
 def test_leak_assertion_trips():
     with pytest.raises(RuntimeError):
         assert_no_leak(["Smith"], '{"judge": "smith, anne"}')
+
+
+def test_to_days_decimals():
+    assert to_days("6.00 Years") == 2160
+
+
+def test_to_days_flat_year():
+    assert to_days("1 Year") == 360
+    assert to_days("12 Months") == 360
+

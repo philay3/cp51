@@ -1,4 +1,4 @@
-# Current task: Phase 4, loader and end to end pipeline
+# Current task: Phase 2 scale-up, production collector
 
 This file is self-contained. Everything needed for this task is here. Do not
 consult other documents to perform it.
@@ -6,377 +6,314 @@ consult other documents to perform it.
 ## Orientation (all the context you need)
 
 CP51 builds a dataset of Philadelphia criminal court outcomes from public
-docket sheets. The parser (phase 3) already produced 31 contract JSON records
-in data/interim/, one per fixture docket, guaranteed name-free by a privacy
-assertion. The database schema exists with eight empty content tables. This
-task builds the loader that fills them, plus the end to end pipeline runner,
-and proves both idempotent. After this task, the database answers real
-queries about real Philadelphia cases for the first time.
+Court of Common Pleas docket sheets. The pipeline is closed end to end:
+scripts/fetch_fixtures.py fetches dockets from the UJS portal (its selector
+code is proven against the live portal), the parser turns PDFs into contract
+JSON, and the loader fills the database (currently 31 fixture cases). The
+collection window is locked: filings 2023 forward.
 
-Expected end state, pre-computed from the interim data: 31 cases, 70
-charges, 43 sentence components, 15 judges, 31 or fewer defendants;
-disposition mapping 51 of 52 non-null dispositions mapped (98.1%), exactly
-1 to other (a concatenated contempt disposition string, by design), 18 null
-(open charges). If the run differs from these numbers, report the difference
-and stop; do not force it.
+This task turns the fixture fetcher into the production collector: systematic
+year and sequence enumeration of `CP-51-CR-{seven digit sequence}-{year}`,
+automatic resume from the raw_dockets ledger, batch caps, and abort on signs
+of portal pushback. After this task, collection is an owner-run, repeatable,
+budget-capped command, not an agent session. The agent's portal contact in
+this task is exactly two directed validation runs and nothing else.
 
 ## Ground rules
 
 - **Commands are ask-first.** Present the exact command(s) with a one line
-  reason, stop, and wait. Related commands may be grouped as one logical
-  block per ask. Run python as .venv/bin/python from the repo root.
-- **Worklog gate.** Per workspace rules, this task is not complete until its
-  entry exists in tasks/worklog.md, written BEFORE the final commit so the
-  commit contains it.
-- **Privacy.** Interim JSON is already name-free. Console output prints only
-  whitelisted values: docket numbers, counts, judge names (public officials),
-  disposition strings, statutes, and hashes. Nothing else from any record.
-- **If the environment does not match this file's assumptions** (missing
-  interim files, dirty git tree, failing tests), stop and ask before
-  adapting.
-- **No em dashes anywhere.** No portal contact of any kind. Do not modify
-  README.md, docs/, PROJECT-INSTRUCTIONS.md, or this file.
+  reason, stop, and wait. Grouped logical blocks are fine.
+- **Portal authorization, scoped to this task:** one validation batch capped
+  at 25 new lookups (step 6) and one resume proof capped at 5 new lookups
+  (step 7). Every lookup is separated by the randomized MIN_DELAY to
+  MAX_DELAY sleep. No other portal contact of any kind. All refactoring and
+  testing before step 6 involves zero portal contact.
+- **Worklog gate.** The task is not complete until its tasks/worklog.md
+  entry exists, written BEFORE the final commit.
+- **Privacy.** PDFs stay in data/raw/ (gitignored). Console output is docket
+  numbers, counts, and statuses only.
+- **Docs exception, narrow:** step 8 directs three exact documentation edits.
+  Those three and nothing else; the do-not-modify rule covers everything
+  else in README.md, docs/, and PROJECT-INSTRUCTIONS.md.
+- **If the environment does not match this file's assumptions, stop and
+  ask.** No em dashes anywhere.
 
 ## Step 0: preflight
 
 ```bash
-ls data/interim/CP-*.json | wc -l
 .venv/bin/python -m pytest tests/ -q
-git status -sb
-git log --oneline -3
+sqlite3 data/processed/phl.db "SELECT parse_status, COUNT(*) FROM raw_dockets GROUP BY parse_status;"
+git status -sb && git log --oneline -2
 ```
 
-Expect 31 interim files, green tests, and a clean tree sitting on the docs
-sync and phase 3 commits. If the tree is dirty or the commits are missing,
-stop and ask.
+Expect green tests, 31 ledger rows all `parsed`, a clean tree on the phase 4
+commit.
 
-## Step 1: lookup updates (exact edits)
+## Step 1: extract the proven portal code
 
-1. In data/lookups/disposition_map.yaml, add one line to the map, directly
-   under the existing "ARD" line:
+Create `src/acquire/portal.py` by MOVING the working fetch function and its
+selector helpers out of `scripts/fetch_fixtures.py`, unchanged: the function
+that searches one docket number and returns the docket sheet PDF bytes or
+None, plus anything it depends on (selector constants, helper functions).
+That code is proven against the live portal DOM; do not redesign it, retitle
+it, or "improve" it. Then update `scripts/fetch_fixtures.py` to import from
+`src.acquire.portal` so the fixture script keeps working. Add a module
+docstring to portal.py noting the selectors were validated against the live
+portal and must not be changed without a directed probe run.
 
-```yaml
-  "ARD - County": diversion
+Verify with zero portal contact:
+
+```bash
+.venv/bin/python -c "from src.acquire.portal import fetch_docket_pdf; print('import ok')"
+.venv/bin/python -m pytest tests/ -q
 ```
 
-2. Append this block to the end of data/lookups/charge_categories.yaml:
+(If the function or its helpers carry different names in fetch_fixtures.py,
+keep the existing names and adjust the import line above to match; report
+the actual names in the worklog.)
 
-```yaml
-statute_map:
-  # Exact statute strings win over prefixes; longest prefix wins otherwise;
-  # anything unmatched falls to other and the other share is reported.
-  # Deliberately unmapped in v1: conspiracy (18 § 903), attempt (18 § 901),
-  # instruments of crime (18 § 907), REAP (18 § 2705).
-  exact:
-    "35 § 780-113 §§ A30": drug-delivery
-  prefix:
-    "35 § 780-113": drug-possession
-    "75 § 3802": dui
-    "18 § 2701": simple-assault
-    "18 § 2702": aggravated-assault
-    "18 § 2501": homicide
-    "18 § 2502": homicide
-    "18 § 2503": homicide
-    "18 § 2504": homicide
-    "18 § 2706": terroristic-threats
-    "18 § 3121": sexual-offenses
-    "18 § 3122": sexual-offenses
-    "18 § 3123": sexual-offenses
-    "18 § 3124": sexual-offenses
-    "18 § 3125": sexual-offenses
-    "18 § 3126": sexual-offenses
-    "18 § 3502": burglary
-    "18 § 3503": criminal-trespass
-    "18 § 3701": robbery
-    "18 § 3921": theft
-    "18 § 3922": theft
-    "18 § 3925": theft
-    "18 § 3929": retail-theft
-    "18 § 4101": fraud-forgery
-    "18 § 4106": fraud-forgery
-    "18 § 6105": firearms
-    "18 § 6106": firearms
-    "18 § 6108": firearms
-    "18 § 6110": firearms
+## Step 2: config additions (exact edits)
+
+Append to `src/config.py`:
+
+```python
+# Collection window (DECISIONS.md D-16): filings 2023 forward, extendable
+# backward by changing this value alone.
+COLLECTION_START_YEAR = int(os.getenv("COLLECTION_START_YEAR", "2023"))
 ```
 
-## Step 2: the loader (exact contents)
+Append to `.env.example`:
 
-### src/db/load.py
+```text
+COLLECTION_START_YEAR=2023
+```
+
+## Step 3: enumeration logic (exact contents)
+
+### src/acquire/enumerate.py
 
 ```python
 """
-Loader: interim JSON records into the database.
-
-Idempotent by construction: each docket is delete-and-replace at the case
-grain (ORM cascades remove its charges and sentences), while judges,
-defendants, and categories are upserts that are never deleted. Running the
-loader twice produces identical row counts.
-
-Console output prints only whitelisted values: docket numbers, counts,
-judge names (public officials), disposition strings, statutes, and hashes.
-Interim JSON is guaranteed name-free by the parser's privacy assertion.
+Enumeration logic for the production collector, kept free of any portal or
+database dependency so it is fully unit testable. The collector wires
+walk_year to the live portal and the raw_dockets ledger.
 """
 
 from __future__ import annotations
 
-import json
-import re
-from collections import Counter
-from datetime import date
+MISS_STREAK_YEAR_END = 25   # consecutive not-found means the year is exhausted
+ERROR_STREAK_ABORT = 5      # consecutive errors means possible pushback, stop
+SEQ_CEILING = 20000         # sanity ceiling far above real annual volume
 
-import yaml
 
-from src.config import INTERIM_DIR, LOOKUPS_DIR
-from src.db.schema import (
-    Case,
-    Charge,
-    ChargeCategory,
-    Defendant,
-    Judge,
-    JudgeAlias,
-    Sentence,
-)
+def format_docket(year: int, seq: int) -> str:
+    return f"CP-51-CR-{seq:07d}-{year}"
+
+
+def walk_year(year: int, statuses: dict, budget: int, lookup) -> dict:
+    """Walk one year's sequences ascending, skipping the ledger.
+
+    statuses: docket_number -> "found" | "not_found" (the ledger; mutated
+    in place as live results arrive). lookup(docket_number) returns
+    "found" | "not_found" | "error" and performs the actual portal work.
+
+    Stops when: budget new lookups are spent, the trailing miss streak
+    reaches MISS_STREAK_YEAR_END (ledgered misses count toward it, so
+    re-runs exhaust a finished year with zero lookups), ERROR_STREAK_ABORT
+    consecutive errors occur, or SEQ_CEILING is hit. Errors are never
+    written to statuses, so errored sequences are retried on the next run.
+    """
+    stats = {"lookups": 0, "found": 0, "not_found": 0, "errors": 0,
+             "exhausted": False, "aborted": False}
+    miss_streak = 0
+    error_streak = 0
+    seq = 1
+    while seq <= SEQ_CEILING:
+        d = format_docket(year, seq)
+        known = statuses.get(d)
+        if known == "found":
+            miss_streak = 0
+        elif known == "not_found":
+            miss_streak += 1
+        else:
+            if stats["lookups"] >= budget:
+                return stats
+            result = lookup(d)
+            stats["lookups"] += 1
+            if result == "found":
+                stats["found"] += 1
+                statuses[d] = "found"
+                miss_streak = 0
+                error_streak = 0
+            elif result == "not_found":
+                stats["not_found"] += 1
+                statuses[d] = "not_found"
+                miss_streak += 1
+                error_streak = 0
+            else:
+                stats["errors"] += 1
+                error_streak += 1
+                if error_streak >= ERROR_STREAK_ABORT:
+                    stats["aborted"] = True
+                    return stats
+        if miss_streak >= MISS_STREAK_YEAR_END:
+            stats["exhausted"] = True
+            return stats
+        seq += 1
+    stats["exhausted"] = True
+    return stats
+```
+
+## Step 4: the collector (exact contents)
+
+### scripts/collect.py
+
+```python
+"""
+Production collector for the locked window (filings COLLECTION_START_YEAR
+forward). Owner-run and owner-paced: each invocation is one batch capped by
+--limit new portal lookups. Resume is automatic via the raw_dockets ledger;
+nothing already attempted is ever contacted again, with one exception: for
+the current calendar year, not_found rows are cleared at startup and
+re-probed, because a docket that does not exist today can be filed tomorrow.
+Prior years' not_found rows are terminal.
+
+Politeness is not optional: a randomized MIN_DELAY to MAX_DELAY sleep
+follows every live lookup, and the run aborts on ERROR_STREAK_ABORT
+consecutive errors (possible pushback) with a screenshot for diagnosis.
+
+Usage:
+  PYTHONPATH=. .venv/bin/python scripts/collect.py --limit 25
+  PYTHONPATH=. .venv/bin/python scripts/collect.py --limit 500
+  PYTHONPATH=. .venv/bin/python scripts/collect.py --limit 500 --year 2024
+"""
+
+from __future__ import annotations
+
+import argparse
+import random
+import time
+from datetime import date, datetime
+
+from playwright.sync_api import sync_playwright
+
+from src.acquire.enumerate import walk_year
+from src.acquire.portal import fetch_docket_pdf
+from src.config import (COLLECTION_START_YEAR, INTERIM_DIR, MAX_DELAY,
+                        MIN_DELAY, RAW_DIR)
+from src.db.schema import RawDocket
 from src.db.session import SessionLocal, init_db
 
-
-def collapse_ws(text: str) -> str:
-    return re.sub(r"\s+", " ", text).strip()
+BROWSER_RESTART_EVERY = 200  # lookups per browser session, guards memory
 
 
-def slugify(name: str) -> str:
-    slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
-    return slug or "unknown"
-
-
-def iso(text):
-    return date.fromisoformat(text) if text else None
-
-
-def load_lookups() -> dict:
-    dispo = yaml.safe_load((LOOKUPS_DIR / "disposition_map.yaml").read_text())
-    cats = yaml.safe_load((LOOKUPS_DIR / "charge_categories.yaml").read_text())
-    overrides = yaml.safe_load((LOOKUPS_DIR / "judge_overrides.yaml").read_text())
-    statute_map = cats.get("statute_map") or {}
-    return {
-        "dispo_map": {collapse_ws(k): v for k, v in (dispo.get("map") or {}).items()},
-        "categories": cats.get("categories") or [],
-        "statute_exact": statute_map.get("exact") or {},
-        "statute_prefix": statute_map.get("prefix") or {},
-        "judge_overrides": overrides.get("overrides") or {},
-    }
-
-
-def categorize_statute(statute, exact: dict, prefix: dict) -> str:
-    """Exact statute string wins, then the longest matching prefix, else other."""
-    if not statute:
-        return "other"
-    s = collapse_ws(statute)
-    if s in exact:
-        return exact[s]
-    best, best_cat = "", "other"
-    for p, cat in prefix.items():
-        if s.startswith(p) and len(p) > len(best):
-            best, best_cat = p, cat
-    return best_cat
-
-
-class JudgeResolver:
-    """Raw sentencing-judge string to one Judge identity.
-
-    Resolution order: exact alias, owner override map, exact match on an
-    existing normalized name, conservative initial-form merge (the raw uses
-    a bare initial and exactly one existing judge shares surname plus first
-    initial), else a new judge. Every resolved raw gains an alias row.
-    """
-
-    def __init__(self, session, overrides: dict):
-        self.session = session
-        self.overrides = {collapse_ws(k): collapse_ws(v)
-                          for k, v in overrides.items()}
-
-    def _get_or_create(self, normalized: str) -> Judge:
-        judge = (self.session.query(Judge)
-                 .filter_by(name_normalized=normalized).one_or_none())
-        if judge is None:
-            judge = Judge(name_normalized=normalized, slug=slugify(normalized))
-            self.session.add(judge)
-            self.session.flush()
-        return judge
-
-    def _initial_match(self, raw: str):
-        m = re.match(r"^([^,]+),\s*([A-Za-z])\.?$", raw)
-        if not m:
-            return None
-        surname = m.group(1).strip().lower()
-        initial = m.group(2).lower()
-        candidates = []
-        for judge in self.session.query(Judge).all():
-            parts = judge.name_normalized.split(",")
-            if len(parts) < 2:
-                continue
-            if (parts[0].strip().lower() == surname
-                    and parts[1].strip().lower().startswith(initial)):
-                candidates.append(judge)
-        return candidates[0] if len(candidates) == 1 else None
-
-    def resolve(self, raw: str) -> Judge:
-        raw = collapse_ws(raw)
-        alias = (self.session.query(JudgeAlias)
-                 .filter_by(name_raw=raw).one_or_none())
-        if alias:
-            return alias.judge
-        if raw in self.overrides:
-            judge = self._get_or_create(self.overrides[raw])
-        else:
-            judge = (self.session.query(Judge)
-                     .filter_by(name_normalized=raw).one_or_none())
-            if judge is None:
-                judge = self._initial_match(raw)
-            if judge is None:
-                judge = self._get_or_create(raw)
-        self.session.add(JudgeAlias(judge_id=judge.id, name_raw=raw))
-        self.session.flush()
-        return judge
-
-
-def touch_seen(judge: Judge, d) -> None:
-    if d is None:
-        return
-    if judge.first_seen is None or d < judge.first_seen:
-        judge.first_seen = d
-    if judge.last_seen is None or d > judge.last_seen:
-        judge.last_seen = d
-
-
-def upsert_categories(session, categories) -> dict:
-    ids = {}
-    for c in categories:
-        row = (session.query(ChargeCategory)
-               .filter_by(slug=c["slug"]).one_or_none())
-        if row is None:
-            row = ChargeCategory(slug=c["slug"], name=c["name"])
-            session.add(row)
-            session.flush()
-        ids[row.slug] = row.id
-    return ids
-
-
-def load_record(session, record, lookups, cat_ids, resolver, stats) -> None:
-    docket = record["docket_number"]
-    existing = session.get(Case, docket)
-    if existing:
-        session.delete(existing)
-        session.flush()
-
-    case_data = record["case"]
-    d_hash = case_data.get("defendant_hash")
-    if d_hash:
-        session.merge(Defendant(id=d_hash))
-
-    case = Case(
-        docket_number=docket,
-        county=case_data.get("county") or "Philadelphia",
-        court_type=case_data.get("court_type") or "Common Pleas",
-        case_status=case_data.get("case_status"),
-        filed_date=iso(case_data.get("filed_date")),
-        otn=case_data.get("otn"),
-        assigned_judge_raw=case_data.get("assigned_judge_raw"),
-        defendant_id=d_hash,
-    )
-    session.add(case)
-
-    judge_tally: Counter = Counter()
-    for c in record["charges"]:
-        raw_dispo = c.get("disposition_raw")
-        if raw_dispo is None:
-            dispo_cat = None
-            stats["dispo_null"] += 1
-        else:
-            key = collapse_ws(raw_dispo)
-            dispo_cat = lookups["dispo_map"].get(key)
-            if dispo_cat is None:
-                dispo_cat = "other"
-                stats["dispo_other"] += 1
-                stats[f"unmapped::{key}"] += 1
-            else:
-                stats["dispo_mapped"] += 1
-
-        cat_slug = categorize_statute(c.get("statute"),
-                                      lookups["statute_exact"],
-                                      lookups["statute_prefix"])
-
-        judge_id = None
-        j_raw = c.get("disposition_judge_raw")
-        if j_raw:
-            judge = resolver.resolve(j_raw)
-            judge_id = judge.id
-            judge_tally[judge_id] += 1
-            touch_seen(judge, iso(c.get("disposition_date")))
-
-        charge = Charge(
-            docket_number=docket,
-            sequence=c.get("sequence"),
-            statute=c.get("statute"),
-            grade=c.get("grade"),
-            offense=c.get("offense"),
-            category_id=cat_ids.get(cat_slug),
-            disposition_raw=raw_dispo,
-            disposition_category=dispo_cat,
-            disposition_date=iso(c.get("disposition_date")),
-            disposition_judge_id=judge_id,
+def load_statuses(session) -> dict:
+    statuses = {}
+    for row in session.query(RawDocket).all():
+        statuses[row.docket_number] = (
+            "not_found" if row.parse_status == "not_found" else "found"
         )
-        for s in c.get("sentences", []):
-            charge.sentences.append(Sentence(
-                sentence_type=s.get("sentence_type"),
-                min_days=s.get("min_days"),
-                max_days=s.get("max_days"),
-                program=s.get("program"),
-                sentence_date=iso(s.get("sentence_date")),
-                raw_text=s.get("raw_text"),
-            ))
-            stats["sentences"] += 1
-        case.charges.append(charge)
-        stats["charges"] += 1
-        stats[f"cat::{cat_slug}"] += 1
+    return statuses
 
-    if judge_tally:
-        case.judge_id = judge_tally.most_common(1)[0][0]
-    stats["cases"] += 1
+
+def clear_frontier_misses(session, year: int) -> int:
+    rows = (session.query(RawDocket)
+            .filter(RawDocket.parse_status == "not_found",
+                    RawDocket.docket_number.like(f"%-{year}"))
+            .all())
+    for row in rows:
+        session.delete(row)
+    session.commit()
+    return len(rows)
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--limit", type=int, default=25,
+                        help="max new portal lookups this run")
+    parser.add_argument("--year", type=int, default=None,
+                        help="restrict to one filing year")
+    args = parser.parse_args()
+
     init_db()
     session = SessionLocal()
-    lookups = load_lookups()
-    cat_ids = upsert_categories(session, lookups["categories"])
-    resolver = JudgeResolver(session, lookups["judge_overrides"])
-    stats: Counter = Counter()
+    this_year = date.today().year
+    years = [args.year] if args.year else list(
+        range(COLLECTION_START_YEAR, this_year + 1))
 
-    files = sorted(INTERIM_DIR.glob("CP-*.json"))
-    for f in files:
-        record = json.loads(f.read_text())
-        load_record(session, record, lookups, cat_ids, resolver, stats)
+    cleared = clear_frontier_misses(session, this_year)
+    if cleared:
+        print(f"frontier: re-probing {cleared} current-year misses")
+
+    statuses = load_statuses(session)
+    budget_left = args.limit
+    state = {"browser": None, "page": None, "pw": None, "since_restart": 0}
+
+    def fresh_page():
+        if state["browser"] is not None:
+            state["browser"].close()
+        state["browser"] = state["pw"].chromium.launch(headless=False)
+        state["page"] = state["browser"].new_page()
+        state["since_restart"] = 0
+
+    def lookup(docket: str) -> str:
+        if state["since_restart"] >= BROWSER_RESTART_EVERY:
+            fresh_page()
+        state["since_restart"] += 1
+        try:
+            pdf = fetch_docket_pdf(state["page"], docket)
+        except Exception as exc:
+            print(f"error {docket}: {type(exc).__name__}")
+            try:
+                state["page"].screenshot(
+                    path=str(INTERIM_DIR / "collect_abort.png"), full_page=True)
+            except Exception:
+                pass
+            time.sleep(random.uniform(MIN_DELAY, MAX_DELAY))
+            return "error"
+        time.sleep(random.uniform(MIN_DELAY, MAX_DELAY))
+        if pdf is None:
+            session.merge(RawDocket(docket_number=docket, pdf_path=None,
+                                    fetched_at=datetime.now(),
+                                    parse_status="not_found",
+                                    notes="no docket sheet at portal"))
+            session.commit()
+            print(f"miss  {docket}")
+            return "not_found"
+        out = RAW_DIR / f"{docket}.pdf"
+        out.write_bytes(pdf)
+        session.merge(RawDocket(docket_number=docket, pdf_path=str(out),
+                                fetched_at=datetime.now(),
+                                parse_status="pending",
+                                notes="collector"))
         session.commit()
+        print(f"saved {docket}")
+        return "found"
 
-    non_null = stats["dispo_mapped"] + stats["dispo_other"]
-    print(f"loaded: {stats['cases']} cases, {stats['charges']} charges, "
-          f"{stats['sentences']} sentence components")
-    print(f"judges: {session.query(Judge).count()}, "
-          f"defendants: {session.query(Defendant).count()}")
-    if non_null:
-        pct = 100.0 * stats["dispo_mapped"] / non_null
-        print(f"disposition mapping: {stats['dispo_mapped']} of {non_null} "
-              f"mapped ({pct:.1f}%), {stats['dispo_other']} to other, "
-              f"{stats['dispo_null']} null (open charges)")
-    for key in sorted(stats):
-        if key.startswith("unmapped::"):
-            print(f"  unmapped disposition ({stats[key]}x): "
-                  f"{key.split('::', 1)[1]}")
-    print("category distribution:")
-    for key, n in stats.most_common():
-        if key.startswith("cat::"):
-            print(f"  {n:>3}  {key.split('::', 1)[1]}")
+    with sync_playwright() as pw:
+        state["pw"] = pw
+        fresh_page()
+        for year in years:
+            if budget_left <= 0:
+                break
+            stats = walk_year(year, statuses, budget_left, lookup)
+            budget_left -= stats["lookups"]
+            print(f"{year}: {stats['lookups']} lookups, "
+                  f"{stats['found']} saved, {stats['not_found']} misses, "
+                  f"{stats['errors']} errors"
+                  f"{', year exhausted' if stats['exhausted'] else ''}"
+                  f"{', ABORTED on error streak' if stats['aborted'] else ''}")
+            if stats["aborted"]:
+                print("possible portal pushback: stopping the whole run; "
+                      "see data/interim/collect_abort.png")
+                break
+        state["browser"].close()
+
+    total = session.query(RawDocket).count()
+    fetched = (session.query(RawDocket)
+               .filter(RawDocket.pdf_path.isnot(None)).count())
+    print(f"ledger: {total} rows, {fetched} PDFs on disk, "
+          f"budget remaining {budget_left}")
     session.close()
 
 
@@ -384,70 +321,59 @@ if __name__ == "__main__":
     main()
 ```
 
-## Step 3: the pipeline runner (exact contents)
+## Step 5: unit tests (exact contents)
 
-### scripts/run_pipeline.py
-
-```python
-"""End to end pipeline: parse every PDF in data/raw, then load every interim
-record into the database. Each stage is idempotent, so the pipeline is too."""
-
-from __future__ import annotations
-
-import os
-import subprocess
-import sys
-
-
-def run(cmd: list[str]) -> None:
-    env = dict(os.environ, PYTHONPATH=".")
-    print(f"\n=== {' '.join(cmd)} ===")
-    subprocess.run(cmd, check=True, env=env)
-
-
-def main() -> None:
-    py = sys.executable
-    run([py, "scripts/parse_fixtures.py"])
-    run([py, "-m", "src.db.load"])
-
-
-if __name__ == "__main__":
-    main()
-```
-
-## Step 4: unit tests (exact contents)
-
-### tests/test_load_helpers.py
+### tests/test_enumerate.py
 
 ```python
-from src.db.load import categorize_statute, collapse_ws, slugify
-
-EXACT = {"35 § 780-113 §§ A30": "drug-delivery"}
-PREFIX = {"35 § 780-113": "drug-possession", "18 § 3502": "burglary"}
+from src.acquire.enumerate import (ERROR_STREAK_ABORT, MISS_STREAK_YEAR_END,
+                                   format_docket, walk_year)
 
 
-def test_slugify():
-    assert slugify("Shaffer, Zachary C.") == "shaffer-zachary-c"
-    assert slugify("DeFino-Nastasi, Rose") == "defino-nastasi-rose"
-    assert slugify("Meehan, William Austin Jr.") == "meehan-william-austin-jr"
+def test_format_docket():
+    assert format_docket(2023, 1) == "CP-51-CR-0000001-2023"
+    assert format_docket(2026, 12345) == "CP-51-CR-0012345-2026"
 
 
-def test_collapse_ws():
-    assert collapse_ws("  Shaffer,   Zachary  C. ") == "Shaffer, Zachary C."
+def test_budget_stops_the_walk():
+    stats = walk_year(2023, {}, budget=3, lookup=lambda d: "found")
+    assert stats["lookups"] == 3 and stats["found"] == 3
+    assert not stats["exhausted"] and not stats["aborted"]
 
 
-def test_categorize_exact_beats_prefix():
-    assert categorize_statute("35 § 780-113 §§ A30", EXACT, PREFIX) == "drug-delivery"
+def test_ledgered_dockets_cost_no_lookups():
+    statuses = {format_docket(2023, s): "found" for s in range(1, 6)}
+    seen = []
+
+    def lookup(d):
+        seen.append(d)
+        return "found"
+
+    walk_year(2023, statuses, budget=2, lookup=lookup)
+    assert seen == [format_docket(2023, 6), format_docket(2023, 7)]
 
 
-def test_categorize_prefix():
-    assert categorize_statute("35 § 780-113 §§ A16", EXACT, PREFIX) == "drug-possession"
-    assert categorize_statute("18 § 3502 §§ A1I", EXACT, PREFIX) == "burglary"
+def test_year_exhausts_on_miss_streak():
+    stats = walk_year(2023, {}, budget=10000, lookup=lambda d: "not_found")
+    assert stats["exhausted"] is True
+    assert stats["lookups"] == MISS_STREAK_YEAR_END
 
 
-def test_categorize_unknown_and_null():
-    assert categorize_statute("18 § 903", EXACT, PREFIX) == "other"
-    assert categorize_statute(None, EXACT, PREFIX) == "other"
+def test_ledgered_misses_exhaust_without_lookups():
+    statuses = {format_docket(2023, s): "found" for s in range(1, 11)}
+    statuses.update({format_docket(2023, s): "not_found"
+                     for s in range(11, 11 + MISS_STREAK_YEAR_END)})
+    stats = walk_year(2023, statuses, budget=100,
+                      lookup=lambda d: "found")
+    assert stats["exhausted"] is True and stats["lookups"] == 0
+
+
+def test_error_streak_aborts_and_is_not_ledgered():
+    statuses = {}
+    stats = walk_year(2023, statuses, budget=100, lookup=lambda d: "error")
+    assert stats["aborted"] is True
+    assert stats["errors"] == ERROR_STREAK_ABORT
+    assert statuses == {}
 ```
 
 Run:
@@ -456,65 +382,80 @@ Run:
 .venv/bin/python -m pytest tests/ -q
 ```
 
-All green before the first load.
+All green before any portal contact.
 
-## Step 5: first load
+## Step 6: directed validation batch (portal, capped at 25)
 
 ```bash
-.venv/bin/python -m src.db.load
+PYTHONPATH=. .venv/bin/python scripts/collect.py --limit 25
 ```
 
-Check the report against the expected end state in the orientation: 31
-cases, 70 charges, 43 sentence components, 15 judges, mapping 51 of 52
-(98.1%) with 1 other and 18 null. Any mismatch: report it and stop.
+Expected: the walk starts at 2023 sequence 1, skips every ledgered fixture
+with zero refetches, performs exactly 25 new lookups (or aborts on an error
+streak, which is a stop-and-report), saves most of them as PDFs, and the
+ledger grows by exactly the number of lookups. Report the full console
+output.
 
-## Step 6: idempotency proof
-
-Run the loader a second time, then the full pipeline once:
+## Step 7: resume proof, then pipeline over everything
 
 ```bash
-.venv/bin/python -m src.db.load
+PYTHONPATH=. .venv/bin/python scripts/collect.py --limit 5
 PYTHONPATH=. .venv/bin/python scripts/run_pipeline.py
 ```
 
-Then verify counts are unchanged:
+The first command must continue where the batch left off with zero repeat
+contacts. The second parses and loads everything on disk (31 fixtures plus
+the new batch). New-layout parse failures are acceptable as
+failed-with-notes; list any in the report and the worklog. Then:
 
 ```bash
-sqlite3 data/processed/phl.db "SELECT 'cases', COUNT(*) FROM cases UNION ALL SELECT 'charges', COUNT(*) FROM charges UNION ALL SELECT 'sentences', COUNT(*) FROM sentences UNION ALL SELECT 'judges', COUNT(*) FROM judges UNION ALL SELECT 'aliases', COUNT(*) FROM judge_aliases UNION ALL SELECT 'defendants', COUNT(*) FROM defendants UNION ALL SELECT 'categories', COUNT(*) FROM charge_categories;"
+sqlite3 data/processed/phl.db "SELECT parse_status, COUNT(*) FROM raw_dockets GROUP BY parse_status;"
+sqlite3 data/processed/phl.db "SELECT 'cases', COUNT(*) FROM cases UNION ALL SELECT 'charges', COUNT(*) FROM charges UNION ALL SELECT 'sentences', COUNT(*) FROM sentences UNION ALL SELECT 'judges', COUNT(*) FROM judges;"
 ```
 
-Identical numbers after every run, or stop and investigate.
+## Step 8: documentation row updates (exact edits, authorized)
 
-## Step 7: verification queries (paste output to the owner)
+1. docs/ROADMAP.md, status table: change the phase 2 row status to
+   `collector hardened (2026-07-02); collection running owner-paced` and
+   the phase 4 row status to `complete (2026-07-02)`.
+2. docs/ROADMAP.md, end of the Phase 4 section, append:
+   `Met 2026-07-02: fixture set loaded with expected counts; idempotency
+   proven by repeated runs.`
+3. docs/DATABASE.md, raw_dockets table, parse_status row: change the notes
+   cell to `pending, parsed, failed, not_found`.
 
-```bash
-sqlite3 -header -column data/processed/phl.db "SELECT disposition_category, COUNT(*) n FROM charges GROUP BY disposition_category ORDER BY n DESC;"
-sqlite3 -header -column data/processed/phl.db "SELECT cc.slug, COUNT(*) n FROM charges ch JOIN charge_categories cc ON ch.category_id = cc.id GROUP BY cc.slug ORDER BY n DESC;"
-sqlite3 -header -column data/processed/phl.db "SELECT j.name_normalized, COUNT(DISTINCT c.docket_number) cases FROM judges j JOIN cases c ON c.judge_id = j.id GROUP BY j.id ORDER BY cases DESC;"
-sqlite3 -header -column data/processed/phl.db "SELECT s.sentence_type, COUNT(*) n, MIN(s.min_days), MAX(s.max_days) FROM sentences s GROUP BY s.sentence_type ORDER BY n DESC;"
-```
+## Step 9: worklog, commit, push
 
-## Step 8: worklog, commit, push
-
-Worklog entry first (per the gate), including: final counts, mapping
-coverage, the unmapped disposition string, idempotency confirmed, and
-anything the next agent (phase 2 scale-up or phase 5) should know. Then:
+Worklog entry first (include: validation batch results, resume proof, any
+parse failures with notes, ledger totals). Then:
 
 ```bash
 git add .
 git status -sb
-git commit -m "Add loader and pipeline; database populated from fixtures"
+git commit -m "Add production collector with ledger resume and batch caps"
 git push
 ```
 
-Confirm nothing under data/ is staged except data/lookups/.
+Nothing under data/ staged except data/lookups/.
+
+## Step 10: hand the keys to the owner
+
+End the report with exactly this, so collection continues without any agent:
+
+"Collection is now yours, repeatable any time [yours, repeat at will]:
+`PYTHONPATH=. .venv/bin/python scripts/collect.py --limit 500`
+(any --limit you like; it resumes automatically and stops itself on
+pushback). After collecting, process what you gathered with
+`PYTHONPATH=. .venv/bin/python scripts/run_pipeline.py`."
 
 ## Definition of done
 
-- Lookup edits applied exactly; tests green including the new helpers.
-- Loader run matches the expected end state or the mismatch was reported.
-- Loader twice plus full pipeline once: identical counts every time.
-- Verification query output delivered to the owner.
-- Worklog entry written before the final commit; commit pushed; nothing
-  under data/ committed except lookups.
-- No portal contact, no analysis work, no schema changes. Stop.
+- portal.py extracted with the proven fetch code unchanged; imports green.
+- enumerate.py and collect.py exactly as given; all tests green.
+- Validation batch completed within 25 lookups with zero fixture refetches;
+  resume proof completed within 5 lookups with zero repeats.
+- Pipeline run over the enlarged corpus; failures, if any, are
+  failed-with-notes and listed.
+- The three documentation edits applied, those three only.
+- Worklog entry written before the final commit; commit pushed.
+- The owner has the standing collection command. Stop.

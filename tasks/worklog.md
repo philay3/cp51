@@ -85,7 +85,7 @@ Entry template:
   - Validation set of 31 CP docket sheet PDFs has been successfully acquired in data/raw/ and corresponding metadata is stored in local database.
   - Disposition and sentence keyword coverage summary generated successfully: Nolle Prossed: 1, Withdrawn: 1, Guilty Plea - Negotiated: 16, Guilty Plea - Non-Negotiated: 7, Guilty Plea: 24, Not Guilty: 1, ARD: 1, Confinement: 23, Probation: 25, Jury Trial: 3.
 
-  ## 2026-07-02: Phase 3, docket sheet parser (backfilled by owner)
+## 2026-07-02: Phase 3, docket sheet parser (backfilled by owner)
 - Outcome: done
 - Built:
   - src/identity.py (hashing, name normalization, privacy leak assertion)
@@ -100,12 +100,19 @@ Entry template:
   is not retained. pytest green; recon run over 31 PDFs; parse_fixtures.py
   parsed 31 of 31 with zero failures (raw_dockets ledger confirms);
   build_audit_pack.py produced the 10 docket audit pack.
-  - Owner audit: [REPLACE with one line, e.g. "6 corrections in round one, passed in round two"]
+  - Owner audit: round one found one wrong docket of 10 (dropped cross-page
+    Confinement on CP-51-CR-0000267-2021 seq 1); three fixes applied
+    (cross-page sentence collection, decimal quantity support, removal of
+    the case-status nulling branch); round two re-checked via diff against
+    the v1 pack and passed.
 - Deviations:
   - Entry backfilled by the owner; the session ended without writing it. The
     worklog gate now in workspace rules exists to prevent recurrence.
   - to_days extended for decimal quantities as printed on real dockets
     ("11.00 Months 15.00 Days"); verified correct (345/690 for 11 1/2 to 23).
+  - Day conversion convention: day = 1, month = 30, year = 360, so 1 Year
+    equals 12 Months. Set by the owner in the task file before dispatch;
+    tests assert it (1 Year 6 Months = 540).
 - Owner items: none
 - Next agent:
   - 31 interim JSONs in data/interim/ are the loader input.
@@ -114,7 +121,6 @@ Entry template:
     dispositions are open charges; 15 sentencing judges, all clean
     "Last, First M." format, no variants; charge_categories.yaml still
     needs its statute-to-category rules.
-
 ## 2026-07-02: Phase 4, loader and end to end pipeline
 - Outcome: done
 - Built:
@@ -135,3 +141,30 @@ Entry template:
   - Database is fully loaded with parsed fixture cases.
   - Idempotency verified.
   - Ready for Phase 5 (analysis or scale up).
+
+## 2026-07-04: Phase 2 scale-up, production collector
+- Outcome: done
+- Built:
+  - src/acquire/portal.py (extracted portal code)
+  - src/acquire/enumerate.py (sequence enumeration walk logic)
+  - scripts/collect.py (batch collect runner script)
+  - tests/test_enumerate.py (unit tests for enumeration)
+  - src/config.py (collection window environment setting)
+  - .env.example (collection window template variable)
+  - scripts/fetch_fixtures.py (refactored to import from portal.py)
+  - docs/ROADMAP.md (updated phase statuses and Loader milestone met note)
+  - docs/DATABASE.md (updated parse_status value range list)
+- Commands:
+  - `.venv/bin/python -m pytest tests/ -q && ...`: Preflight ran: 17 tests passed and 31 database ledger cases verified as parsed.
+  - `git diff`: Checked local modification details.
+  - `.venv/bin/python -c "from src.acquire.portal import fetch_docket_pdf; print('import ok')"`: Succeeded in testing imports.
+  - `PYTHONPATH=. .venv/bin/python scripts/collect.py --limit 25`: Ran directed validation batch: 25 lookups, 18 saved, 7 misses, 0 errors.
+  - `PYTHONPATH=. .venv/bin/python scripts/collect.py --limit 5`: Ran resume proof: 5 lookups, 5 saved, 0 misses, 0 errors.
+  - `PYTHONPATH=. .venv/bin/python scripts/run_pipeline.py`: Parsed and loaded all 54 PDFs: 54 cases, 107 charges, 113 sentence components, 22 judges, 46 defendants.
+  - `sqlite3 data/processed/phl.db ...`: Verified ledger contains 54 parsed and 7 not_found cases (61 total rows).
+  - `git diff docs/`: Verified documentation changes.
+- Deviations: none
+- Owner items: none
+- Next agent:
+  - Collection is hardened, repeatable, and ready to be run by the owner.
+  - All unit tests pass, and database is populated with 54 parsed cases.

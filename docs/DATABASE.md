@@ -164,7 +164,7 @@ stage is reproducible and idempotent.
 | docket_number | str(40) PK | |
 | pdf_path | text, null | |
 | fetched_at | datetime, null | |
-| parse_status | str(20) | pending, parsed, failed |
+| parse_status | str(20) | pending, parsed, failed, not_found |
 | notes | text, null | |
 
 ## Privacy model

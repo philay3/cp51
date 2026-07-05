@@ -44,6 +44,7 @@ from datetime import date, datetime
 
 from playwright.sync_api import sync_playwright
 
+from src.acquire.guard import AbortGuard
 from src.acquire.portal import PORTAL, pdf_from_href
 from src.acquire.windows import week_windows
 from src.config import (COLLECTION_START_YEAR, INTERIM_DIR, MAX_DELAY,
@@ -51,13 +52,21 @@ from src.config import (COLLECTION_START_YEAR, INTERIM_DIR, MAX_DELAY,
 from src.db.schema import HarvestWindow, RawDocket
 from src.db.session import SessionLocal, init_db
 
-ERROR_STREAK_ABORT = 5        # consecutive errors means possible pushback
 BROWSER_RESTART_EVERY = 150   # fetches per browser session, guards memory
 CP_CRIM_RE = re.compile(r"CP-51-CR-\d{7}-\d{4}")
 
 
 def polite_sleep() -> None:
     time.sleep(random.uniform(MIN_DELAY, MAX_DELAY))
+
+
+def screenshot(page) -> None:
+    """Best-effort diagnostic screenshot; never raises into the fetch loop."""
+    try:
+        page.screenshot(path=str(INTERIM_DIR / "collect_abort.png"),
+                        full_page=True)
+    except Exception:
+        pass
 
 
 def run_search(page, start: date, end: date) -> None:
@@ -68,8 +77,8 @@ def run_search(page, start: date, end: date) -> None:
     page.locator("input[name='AdvanceSearch']").check()
     page.wait_for_timeout(800)
     page.locator("select[title='County']").select_option(label="Philadelphia")
-    page.locator("input[name='FiledStartDate']").fill(start.strftime("%m/%d/%Y"))
-    page.locator("input[name='FiledEndDate']").fill(end.strftime("%m/%d/%Y"))
+    page.locator("input[name='FiledStartDate']").fill(start.strftime("%Y-%m-%d"))
+    page.locator("input[name='FiledEndDate']").fill(end.strftime("%Y-%m-%d"))
     page.locator("#btnSearch").click()
     page.wait_for_load_state("networkidle")
 
@@ -84,9 +93,9 @@ def harvest(page) -> tuple[int, list[tuple[str, str | None]]]:
     for i in range(total):
         row = rows.nth(i)
         cells = row.locator("td")
-        if cells.count() == 0:
+        if cells.count() <= 2:
             continue
-        text = cells.first.inner_text() or ""
+        text = cells.nth(2).inner_text() or ""
         m = CP_CRIM_RE.search(text)
         if not m:
             continue
@@ -118,6 +127,9 @@ def main() -> None:
 
     budget = args.limit
     aborted = False
+    # One guard for the whole run: throttling spans week boundaries, so the
+    # no-pdf and error streaks must persist across weeks, not reset per week.
+    guard = AbortGuard()
     state = {"pw": None, "browser": None, "page": None, "since_restart": 0}
 
     def fresh_browser() -> None:
@@ -143,7 +155,6 @@ def main() -> None:
             total, rows = harvest(state["page"])
             cp_n = len(rows)
 
-            error_streak = 0
             for docket, href in rows:
                 if budget <= 0:
                     break
@@ -156,17 +167,11 @@ def main() -> None:
                     pdf = pdf_from_href(state["page"], href)
                 except Exception as exc:
                     print(f"error {docket}: {type(exc).__name__}")
-                    try:
-                        state["page"].screenshot(
-                            path=str(INTERIM_DIR / "collect_abort.png"),
-                            full_page=True)
-                    except Exception:
-                        pass
+                    screenshot(state["page"])
                     budget -= 1
                     state["since_restart"] += 1
-                    error_streak += 1
                     polite_sleep()
-                    if error_streak >= ERROR_STREAK_ABORT:
+                    if guard.record("error"):
                         aborted = True
                         break
                     continue
@@ -175,7 +180,12 @@ def main() -> None:
                 polite_sleep()
                 if pdf is None:
                     print(f"no pdf {docket}")
-                    error_streak = 0
+                    if guard.record("no_pdf"):
+                        screenshot(state["page"])
+                        print(f"no-pdf streak hit {guard.nopdf_abort}: "
+                              "possible throttling")
+                        aborted = True
+                        break
                     continue
                 out = RAW_DIR / f"{docket}.pdf"
                 out.write_bytes(pdf)
@@ -185,7 +195,7 @@ def main() -> None:
                     notes="collector"))
                 session.commit()
                 have_pdf.add(docket)
-                error_streak = 0
+                guard.record("saved")
                 print(f"saved {docket}")
 
             remaining = [d for d, h in rows

@@ -17,8 +17,8 @@ for d in (RAW_DIR, INTERIM_DIR, PROCESSED_DIR, LOOKUPS_DIR):
 DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{PROCESSED_DIR / 'phl.db'}")
 
 # Scrape politeness. Randomized delay between requests, in seconds.
-MIN_DELAY = float(os.getenv("MIN_DELAY", "3"))
-MAX_DELAY = float(os.getenv("MAX_DELAY", "7"))
+MIN_DELAY = float(os.getenv("MIN_DELAY", "6"))
+MAX_DELAY = float(os.getenv("MAX_DELAY", "12"))
 
 # Target scope.
 TARGET_COUNTY = "Philadelphia"

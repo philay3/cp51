@@ -1,319 +1,439 @@
-# Current task: Phase 2 scale-up, production collector
+# Task: Phase 2, search-form production collector
 
-This file is self-contained. Everything needed for this task is here. Do not
-consult other documents to perform it.
+## Orientation
 
-## Orientation (all the context you need)
+You are the coding agent for CP51. Your world is the workspace rules, this
+file, and the repo. This task replaces the retired sequence-enumeration
+collector with a search-form collector.
 
-CP51 builds a dataset of Philadelphia criminal court outcomes from public
-Court of Common Pleas docket sheets. The pipeline is closed end to end:
-scripts/fetch_fixtures.py fetches dockets from the UJS portal (its selector
-code is proven against the live portal), the parser turns PDFs into contract
-JSON, and the loader fills the database (currently 31 fixture cases). The
-collection window is locked: filings 2023 forward.
+Why the change: the old collector walked docket sequence numbers, wasted most
+lookups on non-existent sequences, and the portal began rate-limiting near 20
+lookups per run. The replacement searches by Date Filed for Philadelphia in
+weekly Monday-to-Friday windows across the locked window (filings 2023 forward,
+DECISIONS.md D-16), reads the results grid, harvests only Common Pleas criminal
+docket numbers (the CP-51-CR pattern), and fetches each docket sheet PDF inside
+the same browser session. Every docket it touches is a real case, so no lookup
+is wasted.
 
-This task turns the fixture fetcher into the production collector: systematic
-year and sequence enumeration of `CP-51-CR-{seven digit sequence}-{year}`,
-automatic resume from the raw_dockets ledger, batch caps, and abort on signs
-of portal pushback. After this task, collection is an owner-run, repeatable,
-budget-capped command, not an agent session. The agent's portal contact in
-this task is exactly two directed validation runs and nothing else.
+The search form and results structure were confirmed by directed read-only
+probes. The selectors and facts below are given; do not rediscover them and do
+not contact the portal during this task (see Ground rules).
 
 ## Ground rules
 
-- **Commands are ask-first.** Present the exact command(s) with a one line
-  reason, stop, and wait. Grouped logical blocks are fine.
-- **Portal authorization, scoped to this task:** one validation batch capped
-  at 25 new lookups (step 6) and one resume proof capped at 5 new lookups
-  (step 7). Every lookup is separated by the randomized MIN_DELAY to
-  MAX_DELAY sleep. No other portal contact of any kind. All refactoring and
-  testing before step 6 involves zero portal contact.
-- **Worklog gate.** The task is not complete until its tasks/worklog.md
-  entry exists, written BEFORE the final commit.
-- **Privacy.** PDFs stay in data/raw/ (gitignored). Console output is docket
-  numbers, counts, and statuses only.
-- **Docs exception, narrow:** step 8 directs three exact documentation edits.
-  Those three and nothing else; the do-not-modify rule covers everything
-  else in README.md, docs/, and PROJECT-INSTRUCTIONS.md.
-- **If the environment does not match this file's assumptions, stop and
-  ask.** No em dashes anywhere.
+- Follow the workspace rules on posting an implementation plan for approval
+  before running anything, and on maintaining your task artifact as you work.
+- **Privacy, sharpest edge in the project.** The results grid has a Case
+  Caption column containing defendant names ("Comm. v. LastName, FirstName").
+  The collector reads only the docket-number cell (column 0) and the
+  docket-sheet anchor. It never reads, prints, logs, stores, or commits a
+  caption. The `harvest` function below is written to honor this; do not add
+  any full-row text read, any caption cell read, or any debug print of row
+  contents.
+- **Do not contact the portal in this task.** Writing the collector and
+  running it against the live portal are separate events (DECISIONS.md D-15).
+  Your definition of done is fully offline: unit tests, an offline window
+  dry-run, an import check, and a schema check. The owner runs the first live
+  validation separately, after your work is committed.
+- Commands are ask-first, run as `PYTHONPATH=. .venv/bin/python ...` from the
+  repo root.
+- No em dashes anywhere (code, comments, commit, worklog). Use periods,
+  commas, parentheses, colons.
+- Do not modify README.md, docs/, or the Project Instructions in this task.
+  Schema and code only. The docs update is handled at close-out by the owner.
 
-## Step 0: preflight
+## Confirmed portal facts (given, do not rediscover)
+
+Search form on https://ujsportal.pacourts.us/CaseSearch :
+
+- Search By control: `select[title='Search By']`, choose value `DateFiled`.
+- Advanced Search toggle: `input[name='AdvanceSearch']` (checkbox). Checking
+  it reveals the County control.
+- County control: `select[title='County']`, select by label `Philadelphia`
+  (its options carry no value attribute, so label selection is required).
+- Date range: `input[name='FiledStartDate']` and `input[name='FiledEndDate']`,
+  filled as mm/dd/yyyy.
+- Search button: `#btnSearch`.
+
+Results grid:
+
+- No desktop pagination: the full week is returned at once in one table.
+- Column 0 is the docket number. CP-51-CR rows carry a docket-sheet anchor
+  `a[href*='CpDocketSheet']` whose href holds a one-time hash valid only in the
+  session that produced it (so harvest and fetch happen in the same session).
+- Docket Type is not filterable on a Date Filed search, so the CP-51-CR pattern
+  is the filter, applied in our code.
+
+## Step 0: preflight (ask-first)
 
 ```bash
 .venv/bin/python -m pytest tests/ -q
-sqlite3 data/processed/phl.db "SELECT parse_status, COUNT(*) FROM raw_dockets GROUP BY parse_status;"
-git status -sb && git log --oneline -2
+git status -sb
 ```
 
-Expect green tests, 31 ledger rows all `parsed`, a clean tree on the phase 4
-commit.
+Expect green tests and a clean tree. If dirty, stop and report. Note:
+`tasks/currenttask.md` may show as modified (it is this file); that is expected.
 
-## Step 1: extract the proven portal code
+## Step 1: read, do not change yet
 
-Create `src/acquire/portal.py` by MOVING the working fetch function and its
-selector helpers out of `scripts/fetch_fixtures.py`, unchanged: the function
-that searches one docket number and returns the docket sheet PDF bytes or
-None, plus anything it depends on (selector constants, helper functions).
-That code is proven against the live portal DOM; do not redesign it, retitle
-it, or "improve" it. Then update `scripts/fetch_fixtures.py` to import from
-`src.acquire.portal` so the fixture script keeps working. Add a module
-docstring to portal.py noting the selectors were validated against the live
-portal and must not be changed without a directed probe run.
+Read `src/acquire/portal.py`, `src/acquire/enumerate.py`, `scripts/collect.py`,
+`src/db/schema.py`, and `src/db/session.py` to confirm the current shapes match
+what this task edits. Change nothing in this step.
 
-Verify with zero portal contact:
+## Step 2: exact file contents
 
-```bash
-.venv/bin/python -c "from src.acquire.portal import fetch_docket_pdf; print('import ok')"
-.venv/bin/python -m pytest tests/ -q
-```
-
-(If the function or its helpers carry different names in fetch_fixtures.py,
-keep the existing names and adjust the import line above to match; report
-the actual names in the worklog.)
-
-## Step 2: config additions (exact edits)
-
-Append to `src/config.py`:
-
-```python
-# Collection window (DECISIONS.md D-16): filings 2023 forward, extendable
-# backward by changing this value alone.
-COLLECTION_START_YEAR = int(os.getenv("COLLECTION_START_YEAR", "2023"))
-```
-
-Append to `.env.example`:
-
-```text
-COLLECTION_START_YEAR=2023
-```
-
-## Step 3: enumeration logic (exact contents)
-
-### src/acquire/enumerate.py
+### 2a. Replace `src/acquire/portal.py` with exactly this
 
 ```python
 """
-Enumeration logic for the production collector, kept free of any portal or
-database dependency so it is fully unit testable. The collector wires
-walk_year to the live portal and the raw_dockets ledger.
+Selectors and interaction logic for the Pennsylvania UJS Case Search portal.
+
+The CSS selectors and workflow here were validated against the live portal DOM
+and must not be changed without a directed probe run.
 """
 
 from __future__ import annotations
 
-MISS_STREAK_YEAR_END = 25   # consecutive not-found means the year is exhausted
-ERROR_STREAK_ABORT = 5      # consecutive errors means possible pushback, stop
-SEQ_CEILING = 20000         # sanity ceiling far above real annual volume
+PORTAL = "https://ujsportal.pacourts.us/CaseSearch"
 
 
-def format_docket(year: int, seq: int) -> str:
-    return f"CP-51-CR-{seq:07d}-{year}"
+def pdf_from_href(page, href: str) -> bytes | None:
+    """Fetch a docket-sheet PDF from its results-row href inside the current
+    session. The href carries a one-time hash, so it is only valid in the same
+    browser session as the search that produced it. Returns PDF bytes, or None
+    if the response is missing or is not a PDF."""
+    url = href if href.startswith("http") else f"https://ujsportal.pacourts.us{href}"
+    resp = page.context.request.get(url)
+    if not resp.ok:
+        return None
+    body = resp.body()
+    if not body.startswith(b"%PDF"):
+        return None
+    return body
 
 
-def walk_year(year: int, statuses: dict, budget: int, lookup) -> dict:
-    """Walk one year's sequences ascending, skipping the ledger.
+def fetch_docket_pdf(page, docket: str) -> bytes | None:
+    """Search one docket number; return the docket sheet PDF bytes or None.
+    Retained for the fixture fetcher and single-docket use. The production
+    collector uses pdf_from_href directly on harvested result rows."""
+    page.goto(PORTAL, wait_until="networkidle")
+    page.locator("select[title='Search By']").select_option("DocketNumber")
+    page.locator("input[name='DocketNumber']").fill(docket)
+    page.locator("#btnSearch").click()
+    page.wait_for_load_state("networkidle")
 
-    statuses: docket_number -> "found" | "not_found" (the ledger; mutated
-    in place as live results arrive). lookup(docket_number) returns
-    "found" | "not_found" | "error" and performs the actual portal work.
-
-    Stops when: budget new lookups are spent, the trailing miss streak
-    reaches MISS_STREAK_YEAR_END (ledgered misses count toward it, so
-    re-runs exhaust a finished year with zero lookups), ERROR_STREAK_ABORT
-    consecutive errors occur, or SEQ_CEILING is hit. Errors are never
-    written to statuses, so errored sequences are retried on the next run.
-    """
-    stats = {"lookups": 0, "found": 0, "not_found": 0, "errors": 0,
-             "exhausted": False, "aborted": False}
-    miss_streak = 0
-    error_streak = 0
-    seq = 1
-    while seq <= SEQ_CEILING:
-        d = format_docket(year, seq)
-        known = statuses.get(d)
-        if known == "found":
-            miss_streak = 0
-        elif known == "not_found":
-            miss_streak += 1
-        else:
-            if stats["lookups"] >= budget:
-                return stats
-            result = lookup(d)
-            stats["lookups"] += 1
-            if result == "found":
-                stats["found"] += 1
-                statuses[d] = "found"
-                miss_streak = 0
-                error_streak = 0
-            elif result == "not_found":
-                stats["not_found"] += 1
-                statuses[d] = "not_found"
-                miss_streak += 1
-                error_streak = 0
-            else:
-                stats["errors"] += 1
-                error_streak += 1
-                if error_streak >= ERROR_STREAK_ABORT:
-                    stats["aborted"] = True
-                    return stats
-        if miss_streak >= MISS_STREAK_YEAR_END:
-            stats["exhausted"] = True
-            return stats
-        seq += 1
-    stats["exhausted"] = True
-    return stats
+    links = page.locator("a[href*='CpDocketSheet']")
+    if links.count() == 0:
+        return None
+    href = links.first.get_attribute("href")
+    if not href:
+        return None
+    return pdf_from_href(page, href)
 ```
 
-## Step 4: the collector (exact contents)
-
-### scripts/collect.py
+### 2b. Create `src/acquire/windows.py` with exactly this
 
 ```python
 """
-Production collector for the locked window (filings COLLECTION_START_YEAR
-forward). Owner-run and owner-paced: each invocation is one batch capped by
---limit new portal lookups. Resume is automatic via the raw_dockets ledger;
-nothing already attempted is ever contacted again, with one exception: for
-the current calendar year, not_found rows are cleared at startup and
-re-probed, because a docket that does not exist today can be filed tomorrow.
-Prior years' not_found rows are terminal.
+Pure weekly-window generation for the search-form collector. No portal or
+database dependency, so it is fully unit testable. The collector walks these
+Monday-to-Friday windows across the locked collection window (filings
+COLLECTION_START_YEAR forward, DECISIONS.md D-16).
+"""
 
-Politeness is not optional: a randomized MIN_DELAY to MAX_DELAY sleep
-follows every live lookup, and the run aborts on ERROR_STREAK_ABORT
-consecutive errors (possible pushback) with a screenshot for diagnosis.
+from __future__ import annotations
+
+from datetime import date, timedelta
+
+
+def week_windows(collection_start: date, today: date) -> list[tuple[date, date]]:
+    """Return (start, end) search windows, Monday to Friday, covering every
+    week from collection_start through today, oldest first.
+
+    A week is included when its Friday is on or after collection_start and its
+    Monday is on or before today. The first and last windows are clamped so the
+    search range never runs before collection_start or after today. No filing
+    date in range is skipped except genuine Saturday or Sunday dates, which
+    Monday-to-Friday windows do not cover.
+    """
+    monday = collection_start - timedelta(days=collection_start.weekday())
+    out: list[tuple[date, date]] = []
+    while monday <= today:
+        friday = monday + timedelta(days=4)
+        if friday >= collection_start:
+            start = max(monday, collection_start)
+            end = min(friday, today)
+            if start <= end:
+                out.append((start, end))
+        monday += timedelta(days=7)
+    return out
+```
+
+### 2c. Create `tests/test_windows.py` with exactly this
+
+```python
+from datetime import date
+
+from src.acquire.windows import week_windows
+
+
+def test_first_window_matches_recon():
+    w = week_windows(date(2023, 1, 1), date(2023, 1, 20))
+    assert w[0] == (date(2023, 1, 2), date(2023, 1, 6))
+
+
+def test_no_window_before_collection_start():
+    w = week_windows(date(2023, 1, 1), date(2023, 1, 20))
+    assert all(start >= date(2023, 1, 1) for start, _ in w)
+
+
+def test_last_window_clamped_to_today():
+    w = week_windows(date(2023, 1, 1), date(2023, 1, 18))
+    assert w[-1] == (date(2023, 1, 16), date(2023, 1, 18))
+
+
+def test_windows_are_ordered_and_weekly_when_monday_aligned():
+    w = week_windows(date(2023, 1, 1), date(2023, 2, 28))
+    for (s1, _), (s2, _) in zip(w, w[1:]):
+        assert (s2 - s1).days == 7
+
+
+def test_partial_first_week_has_no_year_boundary_gap():
+    # 2025-01-01 is a Wednesday. The first window must start on Jan 1, not the
+    # following Monday, so Wednesday-to-Friday filings are not skipped.
+    w = week_windows(date(2025, 1, 1), date(2025, 1, 31))
+    assert w[0] == (date(2025, 1, 1), date(2025, 1, 3))
+
+
+def test_window_shape_never_exceeds_five_days():
+    w = week_windows(date(2023, 1, 1), date(2023, 3, 1))
+    for start, end in w:
+        assert end >= start
+        assert (end - start).days <= 4
+```
+
+### 2d. Replace `scripts/collect.py` with exactly this
+
+```python
+"""
+Search-form production collector for the locked window (filings
+COLLECTION_START_YEAR forward, DECISIONS.md D-16). Replaces the retired
+sequence-enumeration collector.
+
+Strategy: walk Monday-to-Friday weekly windows from 2023 forward. For each
+week, run one Date Filed search scoped to Philadelphia, read the results grid,
+harvest only Common Pleas criminal docket numbers (the CP-51-CR pattern) and
+their docket-sheet links, and fetch each PDF inside the same session (the
+sheet link carries a one-time hash). Only real cases are ever touched, so no
+lookup is wasted on a non-existent sequence.
+
+Privacy: the results grid has a Case Caption column with defendant names. This
+collector reads only the docket-number cell and the docket-sheet anchor. It
+never reads, prints, logs, or stores a caption.
+
+Resume: the harvest_windows ledger records each week's status. A week marked
+complete is skipped on later runs. A partial week (budget ran out or the run
+aborted mid-week) is re-searched next time (fresh links) and only its missing
+dockets are fetched. The raw_dockets ledger skips any docket already on disk,
+so re-searching a partial week re-fetches nothing already saved. A prior
+not_found docket that reappears in real results is re-fetched, which cleans up
+the enumeration era's rate-limit false negatives.
+
+Politeness is not optional: a randomized MIN_DELAY to MAX_DELAY sleep follows
+every live fetch, and the run aborts on ERROR_STREAK_ABORT consecutive errors
+(possible pushback) with a screenshot for diagnosis.
+
+Owner-run and owner-paced. --limit caps new PDF fetches per run.
 
 Usage:
-  PYTHONPATH=. .venv/bin/python scripts/collect.py --limit 25
-  PYTHONPATH=. .venv/bin/python scripts/collect.py --limit 500
-  PYTHONPATH=. .venv/bin/python scripts/collect.py --limit 500 --year 2024
+  PYTHONPATH=. .venv/bin/python scripts/collect.py --limit 5
+  PYTHONPATH=. .venv/bin/python scripts/collect.py --limit 100
+  PYTHONPATH=. .venv/bin/python scripts/collect.py --limit 100 --start-year 2024
 """
 
 from __future__ import annotations
 
 import argparse
 import random
+import re
 import time
 from datetime import date, datetime
 
 from playwright.sync_api import sync_playwright
 
-from src.acquire.enumerate import walk_year
-from src.acquire.portal import fetch_docket_pdf
+from src.acquire.portal import PORTAL, pdf_from_href
+from src.acquire.windows import week_windows
 from src.config import (COLLECTION_START_YEAR, INTERIM_DIR, MAX_DELAY,
                         MIN_DELAY, RAW_DIR)
-from src.db.schema import RawDocket
+from src.db.schema import HarvestWindow, RawDocket
 from src.db.session import SessionLocal, init_db
 
-BROWSER_RESTART_EVERY = 200  # lookups per browser session, guards memory
+ERROR_STREAK_ABORT = 5        # consecutive errors means possible pushback
+BROWSER_RESTART_EVERY = 150   # fetches per browser session, guards memory
+CP_CRIM_RE = re.compile(r"CP-51-CR-\d{7}-\d{4}")
 
 
-def load_statuses(session) -> dict:
-    statuses = {}
-    for row in session.query(RawDocket).all():
-        statuses[row.docket_number] = (
-            "not_found" if row.parse_status == "not_found" else "found"
-        )
-    return statuses
+def polite_sleep() -> None:
+    time.sleep(random.uniform(MIN_DELAY, MAX_DELAY))
 
 
-def clear_frontier_misses(session, year: int) -> int:
-    rows = (session.query(RawDocket)
-            .filter(RawDocket.parse_status == "not_found",
-                    RawDocket.docket_number.like(f"%-{year}"))
-            .all())
-    for row in rows:
-        session.delete(row)
-    session.commit()
-    return len(rows)
+def run_search(page, start: date, end: date) -> None:
+    """Drive the Date Filed search for Philadelphia over one weekly window."""
+    page.goto(PORTAL, wait_until="networkidle")
+    page.locator("select[title='Search By']").select_option("DateFiled")
+    page.wait_for_timeout(800)
+    page.locator("input[name='AdvanceSearch']").check()
+    page.wait_for_timeout(800)
+    page.locator("select[title='County']").select_option(label="Philadelphia")
+    page.locator("input[name='FiledStartDate']").fill(start.strftime("%m/%d/%Y"))
+    page.locator("input[name='FiledEndDate']").fill(end.strftime("%m/%d/%Y"))
+    page.locator("#btnSearch").click()
+    page.wait_for_load_state("networkidle")
+
+
+def harvest(page) -> tuple[int, list[tuple[str, str | None]]]:
+    """Return (total_row_count, [(docket, sheet_href_or_None), ...]) for the
+    CP-51-CR rows only. Reads only the docket-number cell (column 0) and the
+    docket-sheet anchor. Never touches the caption cell."""
+    rows = page.locator("table tbody tr")
+    total = rows.count()
+    found: list[tuple[str, str | None]] = []
+    for i in range(total):
+        row = rows.nth(i)
+        cells = row.locator("td")
+        if cells.count() == 0:
+            continue
+        text = cells.first.inner_text() or ""
+        m = CP_CRIM_RE.search(text)
+        if not m:
+            continue
+        docket = m.group(0)
+        sheet = row.locator("a[href*='CpDocketSheet']")
+        href = sheet.first.get_attribute("href") if sheet.count() else None
+        found.append((docket, href))
+    return total, found
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--limit", type=int, default=25,
-                        help="max new portal lookups this run")
-    parser.add_argument("--year", type=int, default=None,
-                        help="restrict to one filing year")
+                        help="max new PDF fetches this run")
+    parser.add_argument("--start-year", type=int, default=None,
+                        help="override the first filing year to walk")
     args = parser.parse_args()
 
     init_db()
     session = SessionLocal()
-    this_year = date.today().year
-    years = [args.year] if args.year else list(
-        range(COLLECTION_START_YEAR, this_year + 1))
+    today = date.today()
+    start_year = args.start_year or COLLECTION_START_YEAR
+    windows = week_windows(date(start_year, 1, 1), today)
 
-    cleared = clear_frontier_misses(session, this_year)
-    if cleared:
-        print(f"frontier: re-probing {cleared} current-year misses")
+    complete = {w.week_start for w in session.query(HarvestWindow)
+                .filter(HarvestWindow.status == "complete").all()}
+    have_pdf = {r.docket_number for r in session.query(RawDocket)
+                .filter(RawDocket.pdf_path.isnot(None)).all()}
 
-    statuses = load_statuses(session)
-    budget_left = args.limit
-    state = {"browser": None, "page": None, "pw": None, "since_restart": 0}
+    budget = args.limit
+    aborted = False
+    state = {"pw": None, "browser": None, "page": None, "since_restart": 0}
 
-    def fresh_page():
+    def fresh_browser() -> None:
         if state["browser"] is not None:
             state["browser"].close()
         state["browser"] = state["pw"].chromium.launch(headless=False)
         state["page"] = state["browser"].new_page()
         state["since_restart"] = 0
 
-    def lookup(docket: str) -> str:
-        if state["since_restart"] >= BROWSER_RESTART_EVERY:
-            fresh_page()
-        state["since_restart"] += 1
-        try:
-            pdf = fetch_docket_pdf(state["page"], docket)
-        except Exception as exc:
-            print(f"error {docket}: {type(exc).__name__}")
-            try:
-                state["page"].screenshot(
-                    path=str(INTERIM_DIR / "collect_abort.png"), full_page=True)
-            except Exception:
-                pass
-            time.sleep(random.uniform(MIN_DELAY, MAX_DELAY))
-            return "error"
-        time.sleep(random.uniform(MIN_DELAY, MAX_DELAY))
-        if pdf is None:
-            session.merge(RawDocket(docket_number=docket, pdf_path=None,
-                                    fetched_at=datetime.now(),
-                                    parse_status="not_found",
-                                    notes="no docket sheet at portal"))
-            session.commit()
-            print(f"miss  {docket}")
-            return "not_found"
-        out = RAW_DIR / f"{docket}.pdf"
-        out.write_bytes(pdf)
-        session.merge(RawDocket(docket_number=docket, pdf_path=str(out),
-                                fetched_at=datetime.now(),
-                                parse_status="pending",
-                                notes="collector"))
-        session.commit()
-        print(f"saved {docket}")
-        return "found"
-
     with sync_playwright() as pw:
         state["pw"] = pw
-        fresh_page()
-        for year in years:
-            if budget_left <= 0:
+        fresh_browser()
+
+        for start, end in windows:
+            if budget <= 0 or aborted:
                 break
-            stats = walk_year(year, statuses, budget_left, lookup)
-            budget_left -= stats["lookups"]
-            print(f"{year}: {stats['lookups']} lookups, "
-                  f"{stats['found']} saved, {stats['not_found']} misses, "
-                  f"{stats['errors']} errors"
-                  f"{', year exhausted' if stats['exhausted'] else ''}"
-                  f"{', ABORTED on error streak' if stats['aborted'] else ''}")
-            if stats["aborted"]:
-                print("possible portal pushback: stopping the whole run; "
-                      "see data/interim/collect_abort.png")
-                break
+            if start in complete:
+                continue
+            if state["since_restart"] >= BROWSER_RESTART_EVERY:
+                fresh_browser()
+
+            run_search(state["page"], start, end)
+            total, rows = harvest(state["page"])
+            cp_n = len(rows)
+
+            error_streak = 0
+            for docket, href in rows:
+                if budget <= 0:
+                    break
+                if docket in have_pdf:
+                    continue
+                if href is None:
+                    print(f"no sheet link {docket}")
+                    continue
+                try:
+                    pdf = pdf_from_href(state["page"], href)
+                except Exception as exc:
+                    print(f"error {docket}: {type(exc).__name__}")
+                    try:
+                        state["page"].screenshot(
+                            path=str(INTERIM_DIR / "collect_abort.png"),
+                            full_page=True)
+                    except Exception:
+                        pass
+                    budget -= 1
+                    state["since_restart"] += 1
+                    error_streak += 1
+                    polite_sleep()
+                    if error_streak >= ERROR_STREAK_ABORT:
+                        aborted = True
+                        break
+                    continue
+                budget -= 1
+                state["since_restart"] += 1
+                polite_sleep()
+                if pdf is None:
+                    print(f"no pdf {docket}")
+                    error_streak = 0
+                    continue
+                out = RAW_DIR / f"{docket}.pdf"
+                out.write_bytes(pdf)
+                session.merge(RawDocket(
+                    docket_number=docket, pdf_path=str(out),
+                    fetched_at=datetime.now(), parse_status="pending",
+                    notes="collector"))
+                session.commit()
+                have_pdf.add(docket)
+                error_streak = 0
+                print(f"saved {docket}")
+
+            remaining = [d for d, h in rows
+                         if h is not None and d not in have_pdf]
+            status = "complete" if (not remaining and not aborted) else "partial"
+            session.merge(HarvestWindow(
+                week_start=start, week_end=end, total_rows=total,
+                cp_criminal_rows=cp_n, status=status,
+                searched_at=datetime.now(),
+                notes=None if status == "complete"
+                else f"{len(remaining)} dockets not yet fetched"))
+            session.commit()
+            print(f"week {start.isoformat()} to {end.isoformat()}: "
+                  f"{total} rows, {cp_n} CP-51-CR, {status}, "
+                  f"budget left {budget}")
+            if status == "complete":
+                complete.add(start)
+
         state["browser"].close()
 
-    total = session.query(RawDocket).count()
-    fetched = (session.query(RawDocket)
-               .filter(RawDocket.pdf_path.isnot(None)).count())
-    print(f"ledger: {total} rows, {fetched} PDFs on disk, "
-          f"budget remaining {budget_left}")
+    if aborted:
+        print("possible portal pushback: run stopped; "
+              "see data/interim/collect_abort.png")
+
+    total_rows = session.query(RawDocket).count()
+    on_disk = session.query(RawDocket).filter(
+        RawDocket.pdf_path.isnot(None)).count()
+    weeks_done = session.query(HarvestWindow).filter(
+        HarvestWindow.status == "complete").count()
+    print(f"ledger: {total_rows} docket rows, {on_disk} PDFs on disk, "
+          f"{weeks_done} weeks complete, budget remaining {budget}")
     session.close()
 
 
@@ -321,141 +441,96 @@ if __name__ == "__main__":
     main()
 ```
 
-## Step 5: unit tests (exact contents)
+### 2e. Edit `src/db/schema.py`: add the HarvestWindow table
 
-### tests/test_enumerate.py
+Append this class to the end of the file, after the `RawDocket` class. Every
+type it uses (Date, DateTime, Integer, String, Text, Optional, date, datetime)
+is already imported at the top of the file, so add no imports.
 
 ```python
-from src.acquire.enumerate import (ERROR_STREAK_ABORT, MISS_STREAK_YEAR_END,
-                                   format_docket, walk_year)
+class HarvestWindow(Base):
+    """One row per weekly search window: the collector's resume ledger and a
+    per-week row-count log for spotting a truncated (capped) result page."""
+    __tablename__ = "harvest_windows"
 
-
-def test_format_docket():
-    assert format_docket(2023, 1) == "CP-51-CR-0000001-2023"
-    assert format_docket(2026, 12345) == "CP-51-CR-0012345-2026"
-
-
-def test_budget_stops_the_walk():
-    stats = walk_year(2023, {}, budget=3, lookup=lambda d: "found")
-    assert stats["lookups"] == 3 and stats["found"] == 3
-    assert not stats["exhausted"] and not stats["aborted"]
-
-
-def test_ledgered_dockets_cost_no_lookups():
-    statuses = {format_docket(2023, s): "found" for s in range(1, 6)}
-    seen = []
-
-    def lookup(d):
-        seen.append(d)
-        return "found"
-
-    walk_year(2023, statuses, budget=2, lookup=lookup)
-    assert seen == [format_docket(2023, 6), format_docket(2023, 7)]
-
-
-def test_year_exhausts_on_miss_streak():
-    stats = walk_year(2023, {}, budget=10000, lookup=lambda d: "not_found")
-    assert stats["exhausted"] is True
-    assert stats["lookups"] == MISS_STREAK_YEAR_END
-
-
-def test_ledgered_misses_exhaust_without_lookups():
-    statuses = {format_docket(2023, s): "found" for s in range(1, 11)}
-    statuses.update({format_docket(2023, s): "not_found"
-                     for s in range(11, 11 + MISS_STREAK_YEAR_END)})
-    stats = walk_year(2023, statuses, budget=100,
-                      lookup=lambda d: "found")
-    assert stats["exhausted"] is True and stats["lookups"] == 0
-
-
-def test_error_streak_aborts_and_is_not_ledgered():
-    statuses = {}
-    stats = walk_year(2023, statuses, budget=100, lookup=lambda d: "error")
-    assert stats["aborted"] is True
-    assert stats["errors"] == ERROR_STREAK_ABORT
-    assert statuses == {}
+    week_start: Mapped[date] = mapped_column(Date, primary_key=True)
+    week_end: Mapped[date] = mapped_column(Date)
+    total_rows: Mapped[Optional[int]] = mapped_column(Integer)
+    cp_criminal_rows: Mapped[Optional[int]] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(20), default="pending")
+    searched_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    notes: Mapped[Optional[str]] = mapped_column(Text)
 ```
 
-Run:
+## Step 3: retire the enumeration collector
+
+Confirm nothing still imports it (expect no hits other than the files being
+removed):
+
+```bash
+grep -rn "enumerate" src/ scripts/ tests/
+```
+
+Then remove it and its test:
+
+```bash
+git rm src/acquire/enumerate.py tests/test_enumerate.py
+```
+
+## Step 4: offline verification (ask-first, no portal contact)
 
 ```bash
 .venv/bin/python -m pytest tests/ -q
 ```
-
-All green before any portal contact.
-
-## Step 6: directed validation batch (portal, capped at 25)
+Expect green. `tests/test_windows.py` adds 6 tests; `tests/test_enumerate.py`
+is gone. The existing parser and loader tests still pass.
 
 ```bash
-PYTHONPATH=. .venv/bin/python scripts/collect.py --limit 25
+.venv/bin/python -c "from src.db.session import init_db; init_db(); print('init ok')"
+sqlite3 data/processed/phl.db ".tables"
+sqlite3 data/processed/phl.db "SELECT count(*) FROM cases; SELECT count(*) FROM judges;"
 ```
-
-Expected: the walk starts at 2023 sequence 1, skips every ledgered fixture
-with zero refetches, performs exactly 25 new lookups (or aborts on an error
-streak, which is a stop-and-report), saves most of them as PDFs, and the
-ledger grows by exactly the number of lookups. Report the full console
-output.
-
-## Step 7: resume proof, then pipeline over everything
+Expect: `.tables` now lists `harvest_windows` alongside the existing tables;
+cases count is 54 and judges count is 22, both unchanged (init_db creates only
+missing tables and never drops data).
 
 ```bash
-PYTHONPATH=. .venv/bin/python scripts/collect.py --limit 5
-PYTHONPATH=. .venv/bin/python scripts/run_pipeline.py
+.venv/bin/python -c "from datetime import date; from src.acquire.windows import week_windows; w = week_windows(date(2023,1,1), date.today()); print(len(w), w[0], w[-1])"
 ```
-
-The first command must continue where the batch left off with zero repeat
-contacts. The second parses and loads everything on disk (31 fixtures plus
-the new batch). New-layout parse failures are acceptable as
-failed-with-notes; list any in the report and the worklog. Then:
+Expect a plausible window count with the first window printed as
+`(datetime.date(2023, 1, 2), datetime.date(2023, 1, 6))`.
 
 ```bash
-sqlite3 data/processed/phl.db "SELECT parse_status, COUNT(*) FROM raw_dockets GROUP BY parse_status;"
-sqlite3 data/processed/phl.db "SELECT 'cases', COUNT(*) FROM cases UNION ALL SELECT 'charges', COUNT(*) FROM charges UNION ALL SELECT 'sentences', COUNT(*) FROM sentences UNION ALL SELECT 'judges', COUNT(*) FROM judges;"
+.venv/bin/python -c "import scripts.collect; print('import ok')"
 ```
-
-## Step 8: documentation row updates (exact edits, authorized)
-
-1. docs/ROADMAP.md, status table: change the phase 2 row status to
-   `collector hardened (2026-07-02); collection running owner-paced` and
-   the phase 4 row status to `complete (2026-07-02)`.
-2. docs/ROADMAP.md, end of the Phase 4 section, append:
-   `Met 2026-07-02: fixture set loaded with expected counts; idempotency
-   proven by repeated runs.`
-3. docs/DATABASE.md, raw_dockets table, parse_status row: change the notes
-   cell to `pending, parsed, failed, not_found`.
-
-## Step 9: worklog, commit, push
-
-Worklog entry first (include: validation batch results, resume proof, any
-parse failures with notes, ledger totals). Then:
-
-```bash
-git add .
-git status -sb
-git commit -m "Add production collector with ledger resume and batch caps"
-git push
-```
-
-Nothing under data/ staged except data/lookups/.
-
-## Step 10: hand the keys to the owner
-
-End the report with exactly this, so collection continues without any agent:
-
-"Collection is now yours, repeatable any time [yours, repeat at will]:
-`PYTHONPATH=. .venv/bin/python scripts/collect.py --limit 500`
-(any --limit you like; it resumes automatically and stops itself on
-pushback). After collecting, process what you gathered with
-`PYTHONPATH=. .venv/bin/python scripts/run_pipeline.py`."
+Expect `import ok` (importing must not launch a browser or hit the portal;
+the main loop is guarded by `if __name__ == '__main__'`).
 
 ## Definition of done
 
-- portal.py extracted with the proven fetch code unchanged; imports green.
-- enumerate.py and collect.py exactly as given; all tests green.
-- Validation batch completed within 25 lookups with zero fixture refetches;
-  resume proof completed within 5 lookups with zero repeats.
-- Pipeline run over the enlarged corpus; failures, if any, are
-  failed-with-notes and listed.
-- The three documentation edits applied, those three only.
-- Worklog entry written before the final commit; commit pushed.
-- The owner has the standing collection command. Stop.
+1. `src/acquire/portal.py`, `src/acquire/windows.py`, `tests/test_windows.py`,
+   `scripts/collect.py`, and the `HarvestWindow` addition to `src/db/schema.py`
+   all match Step 2 exactly.
+2. `src/acquire/enumerate.py` and `tests/test_enumerate.py` are removed and
+   nothing imports them.
+3. All Step 4 checks pass: pytest green, `harvest_windows` created, cases 54
+   and judges 22 unchanged, window dry-run correct, `scripts.collect` imports.
+4. No portal contact occurred during this task.
+5. The worklog entry (below) is written before the final commit, so the commit
+   contains it.
+6. Staging is correct: source, schema, tests, and worklog only. Do not stage
+   `data/processed/phl.db`, anything under `data/raw/`, or `data/interim/`.
+7. Commit pushed.
+
+## Worklog entry (write before the final commit)
+
+Use the template in `tasks/worklog.md`. Title it
+`Phase 2, search-form collector`. Record the files built and removed, each
+approved command with its one-line result, deviations (none expected), and for
+the next agent: the collector is built and offline-verified but has not
+contacted the portal; the owner runs the first directed validation.
+
+## After the agent finishes (owner action, not for the agent)
+
+The owner runs the first live validation separately, one week at a time with a
+tiny budget and eyes on the output, before any scaled collection.

@@ -189,3 +189,61 @@ Entry template:
 - Owner items: none
 - Next agent:
   - The weekly search-form production collector has been successfully built and offline-verified without contacting the portal. The database is prepared with the harvest_windows resume ledger. The owner runs the first live directed validation.
+
+## 2026-07-04: Phase 2, collector live-run fixes
+- Outcome: done
+- Built:
+  - scripts/collect.py (two live-run corrections in the frozen collector logic)
+- Corrections:
+  - Docket cell index: harvest read the docket number from cell 0 (cells.first), but the portal results grid puts the docket number in cell index 2. Every row failed the CP-51-CR match and was skipped, so weeks reported a large total_rows but 0 CP-51-CR and saved nothing. Changed the read to cells.nth(2), and tightened the empty-row guard from cells.count() == 0 to cells.count() <= 2 so the guard matches the cell being read.
+  - ISO date format: the FiledStartDate and FiledEndDate fields are <input type="date"> and require ISO yyyy-mm-dd. run_search fills both with strftime("%Y-%m-%d") rather than mm/dd/yyyy.
+- Root cause: the portal grid layout puts the Docket Number in cell index 2 (a leading actions/expand column occupies earlier cells). The row selector (table tbody tr) and the docket-sheet anchor selector (a[href*='CpDocketSheet']) were correct and unchanged.
+- Commands:
+  - `PYTHONPATH=. .venv/bin/python probe_grid.py`: Read-only, name-free grid probe on the first window (2023-01-02 to 2023-01-06). Result: 1 table, 469 tbody tr rows all 19 cells wide; docket-pattern matched in cell index 2 for 108 of 469 rows (0 in cell 0); every matched row carried 2 CpDocketSheet anchors. Probe was deleted after use, never staged.
+- Deviations: none. The probe script was a throwaway created at the repo root and deleted; it was never committed.
+- Owner items: none
+- Next agent:
+  - The two live-run corrections are in place but not yet verified against the portal end to end. The owner runs the first live directed validation (for example PYTHONPATH=. .venv/bin/python scripts/collect.py --limit 5) to confirm CP-51-CR rows are now harvested and saved. Remember the portal grid puts the docket number in cell index 2.
+## 2026-07-05: Phase 2, throttle-aware abort guard
+- Outcome: done
+- Built:
+  - src/acquire/guard.py (new; portal-free AbortGuard tracking consecutive error and no-pdf streaks, thresholds ERROR_STREAK_ABORT=5 and NO_PDF_STREAK_ABORT=8)
+  - scripts/collect.py (import AbortGuard; drop local ERROR_STREAK_ABORT; add screenshot() helper; instantiate one guard above the week loop so streaks persist across weeks; route error/no_pdf/saved outcomes through guard.record; abort and screenshot on a no-pdf streak)
+  - src/config.py (MIN_DELAY 3->6, MAX_DELAY 7->12)
+  - tests/test_abort_guard.py (new; 6 offline unit tests for the streak logic)
+- Root cause: the abort guard counted only thrown exceptions, but soft rate-limiting arrives as a clean non-PDF HTTP response (429 or a slow-down page) that pdf_from_href reports as None. The no-pdf branch reset the streak and continued, so the guard never fired and the run would grind its whole budget against a throttling portal.
+- Fix reasoning: a separate no-pdf streak aborts at 8, above the exception threshold of 5 because no-pdf is a softer, more ambiguous signal than a thrown exception; only a clean save resets the streaks, so an isolated genuine missing sheet cannot reach 8 while an unbroken throttle run does. Base delay doubled to avg ~9s (band 6-12) to back off below the cadence that provoked pushback at ~44 fetches, band widened proportionally to keep the rhythm randomized.
+- Commands:
+  - `PYTHONPATH=. .venv/bin/pytest -q`: full suite green offline, 29 passed (6 new).
+  - `PYTHONPATH=. .venv/bin/python -c "import scripts.collect"`: import ok, no browser launched.
+- Deviations: added src/acquire/guard.py, a file beyond the two named in the original diff request, so the streak logic imports and unit-tests without pulling in Playwright or contacting the portal; approved by the owner. AbortGuard() moved above the week loop per owner direction so the no-pdf and error streaks persist across week boundaries, since throttling spans weeks.
+- Owner items: none. Fix is offline-verified only; the owner runs the first live directed validation to confirm the guard aborts and screenshots under real throttling.
+- Next agent:
+  - The no-pdf abort marks the in-flight week partial, so it is re-searched with fresh links next run; no fetched data is lost. Delay defaults are now 6/12 and overridable via MIN_DELAY/MAX_DELAY in .env.
+
+## 2026-07-05: Exploration script
+- Outcome: done
+- Built:
+  - scripts/explore.py (new; read-only corpus explorer, prints five labeled sections, stdlib only, no new dependency)
+- Schema the queries bind to (read from the live database, not assumed):
+  - judges: label column name_normalized, key id.
+  - charge_categories: label column is name (not slug), key id.
+  - charges: category_id to charge_categories.id, docket_number to cases.docket_number, plus disposition_category.
+  - cases: judge_id to judges.id (the judge dimension for both judge coverage and the thin-cell view).
+  - harvest_windows: status, total_rows, cp_criminal_rows, week_start (progress meter source).
+- Design notes:
+  - Opens the database read-only via sqlite3 URI mode=ro, so no write can occur and a missing file fails cleanly instead of creating an empty database. SELECT only, no init_db, no schema change.
+  - Thin-cell threshold is the module constant MIN_CELL (default 5), overridable with the optional --min-cell flag.
+  - Privacy: defendants is never joined or read; no defendant id or caption is selected or printed. Only counts, judge names (public officials), category and statute and disposition labels, and dates appear.
+  - Each section prints "no rows yet" when empty, so an early-corpus run reads cleanly.
+  - The run is guarded behind if __name__ == '__main__', so import has no side effect.
+- Commands:
+  - `sqlite3 data/processed/phl.db ".schema judges|charges|cases|charge_categories|harvest_windows"`: read the live schema; confirmed name_normalized, category_id, docket_number, judge_id, and that the category label column is name.
+  - `.venv/bin/python -m pytest tests/ -q`: suite green, 29 passed (no tests added).
+  - `PYTHONPATH=. .venv/bin/python scripts/explore.py`: all five sections printed against the live corpus (319 cases, 773 charges, 40 judges, 4 of 5 weeks complete, 705 CP-51-CR rows seen); categories and judges shown as resolved labels, not ids; no defendant name or caption in the output.
+  - `PYTHONPATH=. .venv/bin/python -c "import scripts.explore; print('import ok')"`: import ok, no database write, no side effect.
+- Deviations: none.
+- Owner items:
+  - Data-quality note (surfaced by the explorer, not caused by it): the judges table holds one junk row, "Confinement Min of 90.00 Days" (1 case), a parser artifact from an earlier phase. Fixing it belongs to a parser or loader task, not this read-only script.
+- Next agent:
+  - scripts/explore.py is strictly read-only and safe to run at any corpus size. Run it as PYTHONPATH=. .venv/bin/python scripts/explore.py (optionally --min-cell N) to watch the corpus grow. It writes nothing and contacts no portal.

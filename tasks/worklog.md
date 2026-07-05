@@ -168,3 +168,24 @@ Entry template:
 - Next agent:
   - Collection is hardened, repeatable, and ready to be run by the owner.
   - All unit tests pass, and database is populated with 54 parsed cases.
+
+## 2026-07-04: Phase 2, search-form collector
+- Outcome: done
+- Built:
+  - src/acquire/portal.py (replaced)
+  - src/acquire/windows.py (created)
+  - tests/test_windows.py (created)
+  - scripts/collect.py (replaced)
+  - src/db/schema.py (modified to add HarvestWindow table)
+- Removed:
+  - src/acquire/enumerate.py
+  - tests/test_enumerate.py
+- Commands:
+  - `.venv/bin/python -m pytest tests/ -q && git status -sb`: Preflight checked 23 passing tests and clean git tree.
+  - `grep -rn "enumerate" src/ scripts/ tests/`: Verified no references to the enumerate module remain in code.
+  - `git rm src/acquire/enumerate.py tests/test_enumerate.py`: Removed retired collector and test files.
+  - `.venv/bin/python -m pytest tests/ -q && ...`: Ran offline verification suite, confirming pytest green (23 passed), database schema updated with harvest_windows table, database case count (54) and judge count (22) unchanged, weekly window dry-run correct, and scripts.collect import successful.
+- Deviations: none
+- Owner items: none
+- Next agent:
+  - The weekly search-form production collector has been successfully built and offline-verified without contacting the portal. The database is prepared with the harvest_windows resume ledger. The owner runs the first live directed validation.

@@ -148,3 +148,17 @@ class RawDocket(Base):
     fetched_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
     parse_status: Mapped[str] = mapped_column(String(20), default="pending")
     notes: Mapped[Optional[str]] = mapped_column(Text)
+
+
+class HarvestWindow(Base):
+    """One row per weekly search window: the collector's resume ledger and a
+    per-week row-count log for spotting a truncated (capped) result page."""
+    __tablename__ = "harvest_windows"
+
+    week_start: Mapped[date] = mapped_column(Date, primary_key=True)
+    week_end: Mapped[date] = mapped_column(Date)
+    total_rows: Mapped[Optional[int]] = mapped_column(Integer)
+    cp_criminal_rows: Mapped[Optional[int]] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(20), default="pending")
+    searched_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    notes: Mapped[Optional[str]] = mapped_column(Text)

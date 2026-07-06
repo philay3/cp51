@@ -22,6 +22,10 @@ Sections printed, in order:
      threshold, showing which pairings approach a usable sample.
   5. Disposition breakdown: disposition_category counts, including open charges
      (a null disposition_category).
+  6. Sentence length by category: for confinement sentences, the category, the
+     count of sentenced charges, and the average min and max length in days.
+  7. Sentence length by judge: the same, grouped by the sentencing judge
+     (charges.disposition_judge_id), for cells at or above MIN_CELL.
 
 Usage:
   PYTHONPATH=. .venv/bin/python scripts/explore.py
@@ -84,6 +88,24 @@ def print_three_column(rows, c1: str, c2: str, c3: str) -> None:
     print(f"  {'-' * w1}  {'-' * w2}  {'-' * w3}")
     for a, b, count in rows:
         print(f"  {str(a):<{w1}}  {str(b):<{w2}}  {count:>{w3}}")
+
+
+def print_four_column(rows, c1: str, c2: str, c3: str, c4: str) -> None:
+    """Print (label, count, avg_min, avg_max) rows as four aligned columns, the
+    three numeric columns right-aligned. Prints a 'no rows yet' line when the
+    section is empty."""
+    if not rows:
+        print("  no rows yet")
+        return
+    w1 = max(len(c1), max(len(str(r[0])) for r in rows))
+    w2 = max(len(c2), max(len(str(r[1])) for r in rows))
+    w3 = max(len(c3), max(len(str(r[2])) for r in rows))
+    w4 = max(len(c4), max(len(str(r[3])) for r in rows))
+    print(f"  {c1:<{w1}}  {c2:>{w2}}  {c3:>{w3}}  {c4:>{w4}}")
+    print(f"  {'-' * w1}  {'-' * w2}  {'-' * w3}  {'-' * w4}")
+    for a, count, avg_min, avg_max in rows:
+        print(f"  {str(a):<{w1}}  {count:>{w2}}  "
+              f"{avg_min:>{w3}}  {avg_max:>{w4}}")
 
 
 def scalar(conn: sqlite3.Connection, sql: str) -> int:
@@ -176,6 +198,69 @@ def section_disposition_breakdown(conn: sqlite3.Connection) -> None:
     print_two_column(display, "disposition", "charges")
 
 
+def section_sentence_length_by_category(conn: sqlite3.Connection) -> None:
+    print_header("Sentence length by category (confinement only, days)")
+    # Confinement sentences only, so probation-only or fine-only dispositions
+    # do not dilute the length. min_days and max_days are already stored in
+    # days (day=1, month=30, year=360 applied at parse time), so no conversion
+    # is needed here. Require min_days not null so the count matches the rows
+    # that feed the averages.
+    rows = conn.execute(
+        """
+        SELECT cc.name AS category,
+               count(*) AS n,
+               round(avg(s.min_days)) AS avg_min,
+               round(avg(s.max_days)) AS avg_max
+        FROM sentences s
+        JOIN charges ch ON s.charge_id = ch.id
+        JOIN charge_categories cc ON ch.category_id = cc.id
+        WHERE s.sentence_type = 'Confinement'
+          AND s.min_days IS NOT NULL
+        GROUP BY cc.id
+        ORDER BY n DESC, cc.name
+        """
+    ).fetchall()
+    display = [
+        (r["category"], r["n"], int(r["avg_min"]), int(r["avg_max"]))
+        for r in rows
+    ]
+    print_four_column(
+        display, "category", "charges", "avg min days", "avg max days")
+
+
+def section_sentence_length_by_judge(conn: sqlite3.Connection,
+                                     min_cell: int) -> None:
+    print_header(
+        f"Sentence length by judge (confinement only, days, cells >= "
+        f"{min_cell})")
+    # Keyed on the charge's disposition_judge_id (the sentencing judge), unlike
+    # the judge-coverage and thin-cell sections which key on cases.judge_id
+    # (the assigned judge). Confinement only, lengths already in days.
+    rows = conn.execute(
+        """
+        SELECT j.name_normalized AS judge,
+               count(*) AS n,
+               round(avg(s.min_days)) AS avg_min,
+               round(avg(s.max_days)) AS avg_max
+        FROM sentences s
+        JOIN charges ch ON s.charge_id = ch.id
+        JOIN judges j ON ch.disposition_judge_id = j.id
+        WHERE s.sentence_type = 'Confinement'
+          AND s.min_days IS NOT NULL
+        GROUP BY j.id
+        HAVING n >= ?
+        ORDER BY n DESC, j.name_normalized
+        """,
+        (min_cell,),
+    ).fetchall()
+    display = [
+        (r["judge"], r["n"], int(r["avg_min"]), int(r["avg_max"]))
+        for r in rows
+    ]
+    print_four_column(
+        display, "judge", "charges", "avg min days", "avg max days")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Read-only corpus explorer for CP51.")
@@ -192,6 +277,8 @@ def main() -> None:
         section_category_depth(conn)
         section_thin_cells(conn, args.min_cell)
         section_disposition_breakdown(conn)
+        section_sentence_length_by_category(conn)
+        section_sentence_length_by_judge(conn, args.min_cell)
         print()
     finally:
         conn.close()

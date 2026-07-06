@@ -237,6 +237,31 @@ Entry template:
   - Privacy: defendants is never joined or read; no defendant id or caption is selected or printed. Only counts, judge names (public officials), category and statute and disposition labels, and dates appear.
   - Each section prints "no rows yet" when empty, so an early-corpus run reads cleanly.
   - The run is guarded behind if __name__ == '__main__', so import has no side effect.
+
+## 2026-07-05: Sentence-length exploration views
+- Outcome: done
+- Built:
+  - scripts/explore.py (extended; added print_four_column helper and two new sections, sentence length by category and sentence length by judge, wired into main after the disposition section; docstring section list updated)
+- Sentence schema the queries bind to (read from the live database, not assumed):
+  - sentences: key id, charge_id to charges.id, sentence_type (VARCHAR), min_days (INTEGER), max_days (INTEGER), plus program, sentence_date, raw_text.
+  - Lengths are already stored in days. min_days and max_days hold day counts (the parser applied the day=1, month=30, year=360 convention at parse time, so raw "11.00 Months 15.00 Days" is stored as 345). No conversion is applied in the explorer; the averages are taken directly over min_days and max_days.
+  - Confinement type: sentence_type values present are Confinement (334), Probation (439), No Further Penalty (94), ARD (25), Fines and Costs (5). The length views filter to sentence_type = 'Confinement' so probation-only and fine-only dispositions do not dilute the figures.
+  - The schema stores a min and a max, so both averages are reported (avg min days, avg max days) rather than collapsed to one.
+- Design notes:
+  - min_days IS NOT NULL is required so the shown count matches the rows feeding the averages. 16 confinement rows carry no parsed length; excluding them leaves 318 confinement sentences with a length.
+  - Judge keying distinction, explicit for phase 5: the sentence-length-by-judge view keys on charges.disposition_judge_id (the sentencing judge, the official who imposed the sentence on that charge). The existing judge-coverage and thin-cell sections key on cases.judge_id (the assigned judge). Both linkages have full coverage over confinement sentences (334 of 334) so neither loses rows, but they answer different questions and must not be conflated.
+  - Averages are rounded to whole days (SQL round, cast to int for display).
+  - The by-judge view applies the same MIN_CELL threshold (default 5, overridable via --min-cell) as the thin-cell section; the by-category view is unthresholded, matching category depth.
+  - Still read-only (mode=ro, SELECT only), defendants never joined or read, no defendant id or caption selected or printed, import has no side effect.
+- Commands (offline, no portal contact):
+  - `.venv/bin/python -m pytest tests/ -q`: existing suite green, 29 passed.
+  - `PYTHONPATH=. .venv/bin/python scripts/explore.py`: all five prior sections plus the two new sentence-length sections printed, lengths in days, labels resolved, no traceback, no defendant name or caption.
+  - `PYTHONPATH=. .venv/bin/python -c "import scripts.explore; print('import ok')"`: import ok, no side effect.
+- Deviations: none.
+- Owner items: none.
+- Next agent:
+  - Sentence lengths live in sentences.min_days and sentences.max_days, already in days (day=1, month=30, year=360), no conversion needed. Confinement is sentence_type = 'Confinement'. For a sentencing-judge cut use charges.disposition_judge_id; for the assigned judge use cases.judge_id.
+  - Data-quality note visible in the run: one malformed judges row ("Confinement Min of 90.00 Days") appears in the judge-coverage section (keyed on cases.judge_id) but not in the sentence-length-by-judge section, so the sentencing-judge join is clean. A future cleanup task may want to scrub that stray judges row.
 - Commands:
   - `sqlite3 data/processed/phl.db ".schema judges|charges|cases|charge_categories|harvest_windows"`: read the live schema; confirmed name_normalized, category_id, docket_number, judge_id, and that the category label column is name.
   - `.venv/bin/python -m pytest tests/ -q`: suite green, 29 passed (no tests added).
@@ -247,3 +272,70 @@ Entry template:
   - Data-quality note (surfaced by the explorer, not caused by it): the judges table holds one junk row, "Confinement Min of 90.00 Days" (1 case), a parser artifact from an earlier phase. Fixing it belongs to a parser or loader task, not this read-only script.
 - Next agent:
   - scripts/explore.py is strictly read-only and safe to run at any corpus size. Run it as PYTHONPATH=. .venv/bin/python scripts/explore.py (optionally --min-cell N) to watch the corpus grow. It writes nothing and contacts no portal.
+
+## 2026-07-05: Static data dashboard
+- Outcome: done
+- Built:
+  - scripts/dashboard.py (new; read-only script, writes one self-contained data/interim/dashboard.html, nine panels, matplotlib figures embedded as base64 PNG, run guarded behind if __name__ == '__main__')
+  - src/analysis/corpus_queries.py (new; shared read-only query module, SELECT only over a mode=ro connection, returns plain row lists, single source of truth for the dashboard numbers)
+  - requirements.txt (added matplotlib>=3.8, the plotting dependency this build requires)
+- Plotting approach: matplotlib (newly added dependency), Agg backend, each figure serialized to a base64 PNG data URI and embedded as an inline <img>. The output HTML references no external URL (no CDN, no external script, no external font), so it opens with no internet connection. Inline CSS only.
+- The nine panels:
+  1. Collection progress: weeks complete out of 183 (progress-meter bar), CP-51-CR rows seen, corpus totals (cases, charges, sentences, judges).
+  2. Category distribution: charges per category, descending bar plus table.
+  3. Disposition breakdown: disposition_category shares including the null bucket (labeled open charges).
+  4. Outcome mix per charge category: stacked share bar per category across the five sentence types plus a non-sentence bucket (charges with no sentence row), with an underlying counts table.
+  5. Sentence length by type: Confinement and Probation only, avg min and max days by category with n, grouped bar; panel notes ARD, No Further Penalty, and Fines and Costs carry no length.
+  6. Sentence length by judge: confinement avg min and max days by sentencing judge (charges.disposition_judge_id), cells at or above the threshold, with n.
+  7. Judge coverage: cases per assigned judge (cases.judge_id), descending bar plus table.
+  8. Thin-cell judge-signal readiness: category by assigned judge counts at or above the threshold, with a cell count.
+  9. Time to disposition: avg filing-to-disposition days by category and by sentencing judge (cells at or above the threshold), each with n and a survivorship-bias caption.
+- Schema columns bound (read from the live database, not assumed):
+  - cases: judge_id (assigned judge), docket_number, filed_date. defendants never joined or read; defendant_id never selected.
+  - charges: category_id to charge_categories.id, docket_number to cases.docket_number, disposition_category, disposition_date, disposition_judge_id (sentencing judge).
+  - sentences: charge_id to charges.id, sentence_type, min_days, max_days (already in days, no conversion).
+  - charge_categories: label column name, key id. judges: name_normalized, key id. harvest_windows: status, cp_criminal_rows.
+- Small-sample honesty and guards: every panel that shows an average shows its n beside it (panels 5, 6, 9); shares in panels 3 and 4 carry the underlying counts; any empty result renders a "no data yet" note instead of a broken chart. Header shows the generation timestamp and current corpus totals, so a saved file is self-dating.
+- Commands (offline, no portal contact):
+  - `.venv/bin/pip install matplotlib`: installed matplotlib 3.11.0 into the venv.
+  - `.venv/bin/python -m pytest tests/ -q`: suite green, 29 passed (no tests added).
+  - `PYTHONPATH=. .venv/bin/python scripts/dashboard.py`: wrote data/interim/dashboard.html (330K), no traceback, all nine panel headings present.
+  - `PYTHONPATH=. .venv/bin/python -c "import scripts.dashboard; print('import ok')"`: import ok, no side effect (run guarded behind __main__).
+  - Output audit greps: zero http(s) URLs, all six img src attributes are data: URIs, no <link>/<script>/@import/googleapis/fonts. tokens; the only "defendant" is the header phrase "no defendant data", the "caption" hits are the CSS class, the "cdn" hits are random substrings inside base64 blobs. No defendant name, no defendant id, no case caption in the file.
+- Deviations:
+  - Per owner direction, scripts/explore.py was left exactly as committed and is not staged. The shared queries were built fresh in src/analysis/corpus_queries.py; explore.py was not refactored to consume it. This leaves mild, accepted duplication between the two files (both hold the corpus-totals, category, disposition, thin-cell, judge-coverage, and confinement-length queries). A shared-query refactor of explore.py, if wanted, is a separate task.
+  - Sentence length by type (panel 5) covers both Confinement and Probation, extending explore.py's confinement-only length view, because the task panel asks for both types that carry a length.
+  - Time to disposition by judge keys on the sentencing judge (charges.disposition_judge_id), labeled as such, matching panel 6; the by-category cut uses cases.filed_date and charges.disposition_date. Both are raw survivorship-biased averages, captioned on the panel.
+- Owner items:
+  - Review and commit. Staged for review: scripts/dashboard.py, src/analysis/corpus_queries.py, requirements.txt, tasks/worklog.md. Not committed or pushed.
+  - data/interim/dashboard.html is gitignored (.gitignore has data/interim/) and is not staged.
+- Next agent:
+  - The dashboard is read-only. Regenerate on demand with PYTHONPATH=. .venv/bin/python scripts/dashboard.py (optional --min-cell N). Output at data/interim/dashboard.html, self-contained, no external URL.
+  - Corpus at build time: 723 cases, 1656 charges, judges and sentences per the header. Numbers come from src/analysis/corpus_queries.py; that module is the single source of truth for the panels.
+
+## 2026-07-05: Charge categorization: eliminate other
+- Outcome: done
+- Built:
+  - data/lookups/charge_categories.yaml: 12 new categories (possessing-instrument-of-crime, reckless-endangerment, criminal-mischief, endangering-welfare-children, strangulation, unlawful-restraint, resisting-fleeing, arson, communication-facility, public-order, other-traffic, inchoate); ~60 new prefix keys covering 100 percent of the prior other set; new inchoate block (prefixes 18 § 901/902/903, ordered contains-rules, fallback inchoate).
+  - src/db/load.py: added resolve_inchoate and categorize_charge (inchoate resolves by offense text after the " - " separator, specific-before-general, bare falls to inchoate); load_lookups now returns the inchoate block; loader calls categorize_charge. categorize_statute unchanged.
+  - src/parse/docket_parser.py: two parse-level fixes. (1) Drop a leading "IC" (Indirect Criminal contempt) marker token before statute detection, so those rows parse a real statute instead of null. (2) Skip continuation lines containing "Unknown Statute" so a void placeholder charge never pollutes the prior charge's offense.
+  - scripts/recategorize.py (new): in-place, idempotent recategorize. Recomputes each charge's category from its stored statute and offense, updates only charges.category_id, reuses the same YAML and mapper. Reads only statute, offense, category.
+  - tests/test_load_helpers.py: added five tests loading the shipped YAML: new dedicated categories, remaps into existing, inchoate named-target, bare-inchoate, and specific-before-general ordering (conspiracy retail theft to retail-theft not theft; conspiracy aggravated assault to aggravated-assault not simple-assault).
+- Scope note: the task assumed open-case charges carry category_id null; in the live DB category_id was never null (the loader assigns a category, defaulting to other, to every charge). Per owner amendment, retired that constraint and recategorized status-agnostically; outcome exclusion runs on disposition_category, which stays null on open cases, so assigning a type category to open charges is harmless.
+- Parser artifact set (condition 1, proven read-only before any reparse): exactly 6 charges across exactly 6 dockets. 5 null-statute IC-contempt rows (CP-51-CR-0000116/0000284/0000583/0001122-2023, CP-51-CR-0004851-2025) and 1 concatenated filler row (CP-51-CR-0000234-2023 seq 3). No others surfaced.
+- Commands:
+  - condition-1 artifact query: 5 null-statute charges + 1 "Unknown Statute" filler = 6 charges in 6 distinct dockets. Matched the plan; continued.
+  - targeted reparse+reload of the 6 dockets (scratchpad one-off, via parse_docket + assert_no_leak + load_record): total charges stayed 1656; pre/post diff moved exactly the 6 expected rows (5 statutes null to 23 § 6114 §§ A, 1 offense cleaned to "Careless Driving"), nothing else. Remaining null/blank statutes 0, remaining "Unknown Statute" fillers 0, remaining leading "IC " offenses 0.
+  - privacy on reparse (condition 6): each of the 6 regenerated interim JSON files is hash-only (64-hex defendant_hash), keys limited to the contract, no defendant_name/caption/" v. "/birth/dob substring.
+  - `PYTHONPATH=. python3 scripts/recategorize.py` (run 1): 1656 charges, 557 reassigned; distribution matches the amended expected table; other = 0.
+  - idempotency (condition 4): run 2 reassigned 0; per-slug counts identical to run 1 (diff empty); charge_categories holds 28 rows for 28 distinct slugs (16 original + 12 new, no duplication).
+  - task verification queries: full distribution as below; `SELECT COUNT(*) ... WHERE cc.slug='other'` returned 0; total charges 1656.
+  - `python3 -m pytest -q`: 34 passed (was 29; 5 categorization tests added).
+- Final distribution (other = 0): Firearms 349, Theft 177, Drug Delivery 162, Possessing Instrument of Crime 111, Simple Assault 109, Aggravated Assault 107, Homicide 82, Recklessly Endangering (REAP) 72, Robbery 67, Drug Possession 67, Sexual Offenses 54, Burglary 38, Fraud and Forgery 37, Criminal Trespass 36, Public Order 29, Inchoate Offenses 28, Terroristic Threats 24, Criminal Mischief 21, Resisting / Fleeing 18, Retail Theft 14, Endangering Welfare of Children 11, Unlawful Restraint / Kidnapping 10, Strangulation 10, DUI 10, Other Traffic 7, Criminal Use of Communication Facility 4, Arson 2. Total 1656.
+- Deviations from the frozen task file (all per owner amendment): 18 § 7512 got its own communication-facility category rather than folding into fraud-forgery, so 12 new seed rows not 11, and fraud-forgery lands at 37 not 41; the null-category open-case constraint was retired as described above. 18 § 3928 to theft and 18 § 3301 to a dedicated arson category were confirmed as planned.
+- Owner items:
+  - Review and commit. Staged for review: data/lookups/charge_categories.yaml, src/db/load.py, src/parse/docket_parser.py, scripts/recategorize.py, tests/test_load_helpers.py, tasks/worklog.md. Regenerated interim JSON (6 dockets) and data/processed/phl.db are gitignored (data/interim/, data/processed/) and not staged.
+- Next agent:
+  - Recategorize is in-place and idempotent: rerun any time with `PYTHONPATH=. python3 scripts/recategorize.py`. It reads stored statute+offense only; no reparse or re-collection.
+  - Future full loads categorize correctly on their own (loader uses categorize_charge), including inchoate resolution and the two parser fixes, so freshly parsed dockets will not reintroduce other for these statutes.
+  - The inchoate resolver keys on the offense text after " - "; if new target crimes appear that are not in the ordered contains-rules, they fall to the inchoate bucket by design. Extend the rules block in charge_categories.yaml to reclassify them.

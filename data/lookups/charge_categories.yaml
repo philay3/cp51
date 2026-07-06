@@ -16,13 +16,26 @@ categories:
   - {slug: fraud-forgery, name: Fraud and Forgery}
   - {slug: sexual-offenses, name: Sexual Offenses}
   - {slug: homicide, name: Homicide}
+  - {slug: possessing-instrument-of-crime, name: Possessing Instrument of Crime}
+  - {slug: reckless-endangerment, name: Recklessly Endangering (REAP)}
+  - {slug: criminal-mischief, name: Criminal Mischief}
+  - {slug: endangering-welfare-children, name: Endangering Welfare of Children}
+  - {slug: strangulation, name: Strangulation}
+  - {slug: unlawful-restraint, name: Unlawful Restraint / Kidnapping}
+  - {slug: resisting-fleeing, name: Resisting / Fleeing}
+  - {slug: arson, name: Arson}
+  - {slug: communication-facility, name: Criminal Use of Communication Facility}
+  - {slug: public-order, name: Public Order}
+  - {slug: other-traffic, name: Other Traffic}
+  - {slug: inchoate, name: Inchoate Offenses}
   - {slug: other, name: Other}
 
 statute_map:
-  # Exact statute strings win over prefixes; longest prefix wins otherwise;
-  # anything unmatched falls to other and the other share is reported.
-  # Deliberately unmapped in v1: conspiracy (18 § 903), attempt (18 § 901),
-  # instruments of crime (18 § 907), REAP (18 § 2705).
+  # Exact statute strings win over prefixes; longest prefix wins otherwise.
+  # Inchoate statutes (18 § 901 attempt, 18 § 902 solicitation, 18 § 903
+  # conspiracy) are resolved by offense text first (see the inchoate block);
+  # bare inchoate falls to the inchoate category. Keys are base statute, no
+  # subsection: "18 § 907" matches "18 § 907 §§ A".
   exact:
     "35 § 780-113 §§ A30": drug-delivery
   prefix:
@@ -54,4 +67,95 @@ statute_map:
     "18 § 6106": firearms
     "18 § 6108": firearms
     "18 § 6110": firearms
+    # Dedicated categories for high-volume standalone offenses.
+    "18 § 907": possessing-instrument-of-crime
+    "18 § 908": possessing-instrument-of-crime
+    "18 § 2705": reckless-endangerment
+    "18 § 3304": criminal-mischief
+    "18 § 4304": endangering-welfare-children
+    "18 § 2718": strangulation
+    "18 § 2902": unlawful-restraint
+    "18 § 2901": unlawful-restraint
+    "18 § 2903": unlawful-restraint
+    "18 § 5104": resisting-fleeing
+    "75 § 3733": resisting-fleeing
+    "18 § 3301": arson
+    "18 § 7512": communication-facility
+    # Remaps into existing categories.
+    "18 § 6312": sexual-offenses
+    "18 § 6301": sexual-offenses
+    "18 § 6318": sexual-offenses
+    "18 § 3127": sexual-offenses
+    "18 § 4915": sexual-offenses
+    "18 § 7507.1": sexual-offenses
+    "18 § 4120": fraud-forgery
+    "18 § 4117": fraud-forgery
+    "62 § 1407": fraud-forgery
+    "18 § 4114": fraud-forgery
+    "18 § 4911": fraud-forgery
+    "18 § 4903": fraud-forgery
+    "18 § 4904": fraud-forgery
+    "25 § 3513": fraud-forgery
+    "18 § 6111": firearms
+    "18 § 2707.1": firearms
+    "18 § 6117": firearms
+    "18 § 3934": theft
+    "18 § 3927": theft
+    "18 § 3928": theft
+    "18 § 3702": robbery
+    "75 § 3732": homicide
+    "75 § 3735": homicide
+    "75 § 3735.1": aggravated-assault
+    # Public order umbrella (harassment, disorderly, obstruction of justice).
+    "18 § 2709": public-order
+    "18 § 5503": public-order
+    "18 § 2715": public-order
+    "18 § 5507": public-order
+    "18 § 4910": public-order
+    "18 § 4912": public-order
+    "18 § 4914": public-order
+    "18 § 4953": public-order
+    "18 § 5121": public-order
+    "18 § 5122": public-order
+    "18 § 911": public-order
+    "23 § 6114": public-order
+    # Other traffic umbrella (75 § 37xx not DUI or homicide by vehicle).
+    "75 § 1543": other-traffic
+    "75 § 3112": other-traffic
+    "75 § 3323": other-traffic
+    "75 § 3714": other-traffic
+    "75 § 3736": other-traffic
+    "75 § 3742": other-traffic
+    "75 § 4303": other-traffic
+
+  # Inchoate offenses inherit the category of their named target crime, read
+  # from the offense text after the " - " separator. Rules are checked in
+  # order, first substring match wins, so specific precedes general (retail
+  # theft before theft, aggravated assault before assault). Offense text with
+  # no resolvable target (bare "Conspiracy", "Criminal Attempt") uses fallback.
+  inchoate:
+    prefixes: ["18 § 901", "18 § 902", "18 § 903"]
+    fallback: inchoate
+    rules:
+      - {contains: "retail theft", category: retail-theft}
+      - {contains: "murder", category: homicide}
+      - {contains: "homicide", category: homicide}
+      - {contains: "aggravated assault", category: aggravated-assault}
+      - {contains: "simple assault", category: simple-assault}
+      - {contains: "robbery", category: robbery}
+      - {contains: "burglary", category: burglary}
+      - {contains: "manufacture", category: drug-delivery}
+      - {contains: "delivery", category: drug-delivery}
+      - {contains: "intent to manuf", category: drug-delivery}
+      - {contains: "possession with intent", category: drug-delivery}
+      - {contains: "receiving stolen", category: theft}
+      - {contains: "theft", category: theft}
+      - {contains: "terroristic", category: terroristic-threats}
+      - {contains: "harassment", category: public-order}
+      - {contains: "trespass", category: criminal-trespass}
+      - {contains: "tres", category: criminal-trespass}
+      - {contains: "materially false written statement", category: firearms}
+      - {contains: "sales of firearms", category: firearms}
+      - {contains: "firearm", category: firearms}
+      - {contains: "false signature", category: fraud-forgery}
 

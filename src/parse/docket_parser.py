@@ -234,7 +234,13 @@ def parse_docket(pdf_path: Path) -> tuple[dict, list[str]]:
             if tokens[0] in GRADES:
                 grade = tokens[0]
                 tokens = tokens[1:]
-                
+
+            # Indirect Criminal contempt rows lead with an "IC" filing marker
+            # in front of the statute. Drop it so statute detection starts at
+            # the real statute instead of stopping on a non-statute token.
+            if tokens and tokens[0] == "IC":
+                tokens = tokens[1:]
+
             date_idx = -1
             for idx in range(len(tokens) - 1, -1, -1):
                 if re.match(r"^\d{2}/\d{2}/\d{4}$", tokens[idx]):
@@ -283,6 +289,11 @@ def parse_docket(pdf_path: Path) -> tuple[dict, list[str]]:
             }
             parsed_charges[seq] = active_charge
         else:
+            # A void placeholder charge ("0 § 0 Unknown Statute ...") can trail
+            # a real charge on a line the sequence regex rejects (comma in the
+            # OTN). Drop it so it never pollutes the prior charge's offense.
+            if "Unknown Statute" in line_str:
+                continue
             if active_charge:
                 if active_charge["offense"]:
                     active_charge["offense"] = active_charge["offense"] + " " + line_str

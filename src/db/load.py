@@ -56,6 +56,7 @@ def load_lookups() -> dict:
         "categories": cats.get("categories") or [],
         "statute_exact": statute_map.get("exact") or {},
         "statute_prefix": statute_map.get("prefix") or {},
+        "inchoate": statute_map.get("inchoate") or {},
         "judge_overrides": overrides.get("overrides") or {},
     }
 
@@ -72,6 +73,35 @@ def categorize_statute(statute, exact: dict, prefix: dict) -> str:
         if s.startswith(p) and len(p) > len(best):
             best, best_cat = p, cat
     return best_cat
+
+
+def resolve_inchoate(offense, inchoate: dict) -> str:
+    """Inchoate charge inherits the category of its named target crime.
+
+    The target is the offense text after the ' - ' separator; rules match as
+    substrings in order (specific before general). Bare inchoate with no
+    resolvable target returns the configured fallback category.
+    """
+    fallback = inchoate.get("fallback") or "inchoate"
+    if not offense or " - " not in offense:
+        return fallback
+    target = collapse_ws(offense.split(" - ", 1)[1]).lower()
+    for rule in inchoate.get("rules") or []:
+        if rule["contains"] in target:
+            return rule["category"]
+    return fallback
+
+
+def categorize_charge(statute, offense, exact: dict, prefix: dict,
+                      inchoate: dict) -> str:
+    """Categorize one charge: inchoate offenses resolve by offense text first,
+    everything else by the statute map."""
+    if statute:
+        s = collapse_ws(statute)
+        for p in inchoate.get("prefixes") or []:
+            if s.startswith(p):
+                return resolve_inchoate(offense, inchoate)
+    return categorize_statute(statute, exact, prefix)
 
 
 class JudgeResolver:
@@ -195,9 +225,11 @@ def load_record(session, record, lookups, cat_ids, resolver, stats) -> None:
             else:
                 stats["dispo_mapped"] += 1
 
-        cat_slug = categorize_statute(c.get("statute"),
-                                      lookups["statute_exact"],
-                                      lookups["statute_prefix"])
+        cat_slug = categorize_charge(c.get("statute"),
+                                     c.get("offense"),
+                                     lookups["statute_exact"],
+                                     lookups["statute_prefix"],
+                                     lookups["inchoate"])
 
         judge_id = None
         j_raw = c.get("disposition_judge_raw")

@@ -76,10 +76,11 @@ One row per docket.
 |---|---|---|
 | docket_number | str(40) PK | `CP-51-CR-#######-YYYY` |
 | county | str(40) | default Philadelphia |
-| court_type | str(40) | default Common Pleas |
+| court_type | str(40) | Common Pleas or Municipal Court (D-18) |
 | case_status | str(40), null | Closed, Active, etc., raw |
 | filed_date | date, null | |
 | otn | str(40), null | offense tracking number |
+| dc_number | str(40), null | District Control Number, from the Case Local Number(s) table; with otn, keys consolidated sibling groups (D-18). Added in Phase 7 |
 | judge_id | FK judges.id, null | **the sentencing judge**: modal judge across this case's sentenced charges. Convenience denormalization; charge-level truth lives on charges.disposition_judge_id |
 | assigned_judge_raw | text, null | the "Judge Assigned" string from the case header, raw only, kept for assignment analysis |
 | defendant_id | FK defendants.id, null | |

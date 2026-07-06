@@ -72,6 +72,31 @@ sections. The ones the parser cares about, in the order they appear:
    yet loaded; parked for a possible future surface (ROADMAP).
 8. **Entries.** The chronological docket entries. Not parsed in v1.
 
+## Municipal Court sheets (MC-51-CR)
+
+Recon on four real 2026 MC sheets (two open, two closed) established:
+
+- Banner reads MUNICIPAL COURT OF PHILADELPHIA COUNTY; everything else about
+  the page furniture matches CP.
+- Four sections CP sheets do not have: RELATED CASES (between CASE
+  INFORMATION and STATUS INFORMATION), CASE PARTICIPANTS, BAIL INFORMATION,
+  and CASE FINANCIAL INFORMATION (closed cases only).
+- The charges grid is CP-identical: same columns, statute notation, grades,
+  and continuation-line behavior. Ungraded rows (DUI, drug) leave the grade
+  column blank.
+- Judge Assigned is present but blank on all sampled sheets, open and closed.
+  Judges appear by name only in CALENDAR EVENTS and ENTRIES. The disposition
+  judge field is expected to populate on sentenced cases; unverified.
+- OTN appears in CASE INFORMATION and on every charge row. The District
+  Control Number lives inside the Case Local Number(s) table, not as a
+  standalone field.
+- RELATED CASES lists consolidated sibling dockets reciprocally, with an
+  association reason. Its caption column contains third-party names and is
+  never stored, printed, or logged; the section is parsed for docket number,
+  court, and association reason only.
+- Unverified pending MC fixtures: plea versus trial disposition labeling,
+  sentence and AMP rendering, and held-for-court rendering.
+
 ## Parser field mapping
 
 | Docket section | Field | Lands in |

@@ -1,7 +1,7 @@
 # Roadmap
 
 > Status: living document. Update the status column as phases land; everything
-> else changes only by decision (DECISIONS.md). Last updated 2026-07-02.
+> else changes only by decision (DECISIONS.md). Last updated 2026-07-06.
 
 ## Phases
 
@@ -13,6 +13,7 @@
 | 4 | Loader and pipeline | complete (2026-07-02) |
 | 5 | Analysis and stats release | not started |
 | 6 | API and forecaster frontend | not started |
+| 7 | Municipal Court expansion | next (runs before Phase 5) |
 
 Build order note, now historical: the parser was validated first, on a
 31-docket fixture set collected by a minimal owner-directed fetcher
@@ -84,10 +85,42 @@ including suppression behavior; the frontend renders the six outputs with n
 and intervals visible and the disclaimer unremovable; the calibration page
 renders the backtest; deployed behind rate limiting.
 
+### Phase 7: Municipal Court expansion (scheduled next, before Phase 5)
+
+Extends acquisition, parsing, and loading to the MC-51-CR docket series under
+D-18 and D-19. Recon on real MC sheets confirmed the CP parser runs with a
+small bounded delta; MC gets no separate parse path.
+
+Stages:
+1. Parser delta: skip the MUNICIPAL COURT OF PHILADELPHIA COUNTY banner;
+   register RELATED CASES, CASE PARTICIPANTS, BAIL INFORMATION, and CASE
+   FINANCIAL INFORMATION as sections so RELATED CASES third-party captions
+   stop folding into CASE INFORMATION; extract District Control Number from
+   the Case Local Number(s) table; parse RELATED CASES docket number, court,
+   and association reason while never storing its caption column.
+2. MC fixture validation, the gate: a hand-picked MC fixture set that must
+   include at least one case closed by conviction (verifies plea versus trial
+   labeling), one sentenced or AMP-diverted case (verifies the sentence and
+   diversion rendering), and one held-for-court case (verifies how the CP
+   docket surfaces). These three renderings are unverified by recon and block
+   collection until proven.
+3. Loader and schema: populate cases.court_type with Municipal Court, add
+   cases.dc_number, implement the consolidated-sibling grouping and the de
+   novo outcome-of-record rule.
+4. Collector: harvest MC-51-CR rows from the same search results (same
+   CpDocketSheet link pattern, confirmed by recon), same caption privacy
+   rule, window per D-19.
+5. Stats layer filter: published outputs restrict to filings 2025 forward for
+   both courts.
+
+Acceptance: MC fixtures parse with zero privacy sentinels and correct fields
+for all three unverified renderings; a collection batch loads MC cases with
+court_type, dc_number, and sibling groups populated; no SU, MD, or traffic
+docket enters the database; the published-stats filter excludes pre-2025
+filings; idempotency holds across a repeated run.
+
 ## Parked (deliberately not now)
 
-- **Municipal Court coverage.** Many Philadelphia cases live entirely in MC;
-  large scope expansion, revisit after CP is solid.
 - **Court Summary parsing** for prior record context; unlocks better case-mix
   adjustment (METHODOLOGY.md) and a defendants column (DATABASE.md).
 - **Attorney, prosecutor, and officer surfaces.** Dockets name counsel;

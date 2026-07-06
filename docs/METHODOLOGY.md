@@ -153,8 +153,24 @@ specific case.
   detention status, and (for now) prior record. The numbers condition on what
   the docket shows.
 - **Case-level totals** are out of scope for v1 (concurrency, above).
-- **Municipal Court is out of scope.** Many Philadelphia cases begin and end
-  in Municipal Court; CP51 covers Common Pleas only for now (ROADMAP).
+- **Two courts, never blended (D-18).** Every metric is computed and shown
+  per source court. Municipal Court headlines charges that lead as
+  misdemeanors (DUI, standalone simple assault, retail theft, small drug
+  possession); Common Pleas headlines felonies. A combined view, where shown,
+  is labeled as combined.
+- **The CP selection effect.** A misdemeanor appearing in a Common Pleas case
+  is there because it was co-charged with a felony. CP-only numbers for such
+  charges describe the felony-adjacent slice, not the standalone charge, and
+  the product says so wherever they are shown.
+- **MC exclusions.** MC-51-SU, MC-51-MD, and traffic-division matters are out
+  of scope. Held for Court and Proceed to Court are non-terminal and never
+  enter a denominator; a held felony's outcome is read from its CP docket.
+- **De novo appeals.** When an MC conviction is retried de novo in CP, the CP
+  result is the outcome of record; the superseded MC result never counts.
+- **Consolidated siblings.** MC dockets sharing an OTN and District Control
+  Number are one incident charged across sibling dockets. Charge-level stats
+  may use each charge once; incident-level counts key on the OTN plus DCN
+  group, so one incident is never counted as five.
 
 ## Threshold constants (initial values, tunable)
 

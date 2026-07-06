@@ -2,6 +2,7 @@ playwright>=1.44
 pdfplumber>=0.11
 SQLAlchemy>=2.0
 pandas>=2.2
+matplotlib>=3.8
 python-dotenv>=1.0
 tenacity>=8.2
 PyYAML>=6.0

@@ -339,3 +339,18 @@ Entry template:
   - Recategorize is in-place and idempotent: rerun any time with `PYTHONPATH=. python3 scripts/recategorize.py`. It reads stored statute+offense only; no reparse or re-collection.
   - Future full loads categorize correctly on their own (loader uses categorize_charge), including inchoate resolution and the two parser fixes, so freshly parsed dockets will not reintroduce other for these statutes.
   - The inchoate resolver keys on the offense text after " - "; if new target crimes appear that are not in the ordered contains-rules, they fall to the inchoate bucket by design. Extend the rules block in charge_categories.yaml to reclassify them.
+
+## 2026-07-06: Docs: Municipal Court expansion recorded, D-18 and D-19
+- Outcome: done
+- Built:
+  - docs/DECISIONS.md: added D-18 (MC expansion scope and rules) and D-19 (window amendment, published data 2025 forward), inserted after D-17 and before the Open section.
+  - docs/METHODOLOGY.md: replaced the single "Municipal Court is out of scope" bullet with five two-court rule bullets (two courts never blended, the CP selection effect, MC exclusions, de novo appeals, consolidated siblings).
+  - docs/ROADMAP.md: bumped Last updated to 2026-07-06; added Phases-table row "7 | Municipal Court expansion | next (runs before Phase 5)"; removed the parked "Municipal Court coverage" bullet; inserted the Phase 7 block (five stages plus acceptance) before the Parked section.
+  - docs/DATA_SOURCE.md: added a "Municipal Court sheets (MC-51-CR)" section between the anatomy list and Parser field mapping, recording the recon findings.
+  - docs/DATABASE.md: changed cases.court_type note to "Common Pleas or Municipal Court (D-18)"; added a dc_number row directly under otn.
+  - tasks/worklog.md: this entry.
+- Commands:
+  - `git diff` review of the six files, then a single commit "Docs: record MC expansion, D-18 and D-19, Phase 7" (owner-approved, once per task).
+- Deviations: none. All six anchors matched the files exactly; no improvisation. Two judgment calls were owner-confirmed before editing: the Phases-table row wording and the Last-updated date bump.
+- Owner items: none outstanding beyond the approved commit.
+- Next agent: Phase 7 (Municipal Court expansion) is the next phase to start, before Phase 5, per D-18, D-19, and the new ROADMAP Phase 7 block. The recon that backs these docs was read-only; the three renderings flagged unverified (plea versus trial labeling, sentence and AMP rendering, held-for-court) gate MC collection and must be proven on MC fixtures first.

@@ -104,6 +104,29 @@ diffs, never reissued files. A task is not complete until its entry exists
 in tasks/worklog.md, written before the task's final commit so the commit
 contains it.
 
+**D-18 Municipal Court expansion; scope and rules (2026-07-06).** CP51 covers
+both Philadelphia criminal trial courts. In scope: the MC-51-CR docket series
+only. Out of scope: MC-51-SU (summaries), MC-51-MD (miscellaneous), the
+traffic division, and any CP or MC series other than -CR. Held for Court and
+Proceed to Court are non-terminal statuses, never counted as outcomes; the
+outcome of a held felony is read from its CP docket. When an MC conviction is
+appealed de novo to CP, the CP result is the outcome of record and the MC
+result is superseded. Dockets sharing an OTN and District Control Number form
+a consolidated sibling group (confirmed on real MC sheets via the RELATED
+CASES section): siblings are kept as separate case rows with distinct charge
+sets, never merged and never counted as independent incidents; incident-level
+stats key on the OTN plus DCN group. Every output carries its source court;
+courts are never silently blended. Comparable-tool precedent: D-13's
+reference keeps its two court tiers separate and headlines the lower court.
+
+**D-19 Window amendment: published data 2025 forward (2026-07-06).** Amends
+D-16. The published dataset and all go-forward collection cover filings from
+2025-01-01 for both courts. The 2023 and 2024 CP data already collected stays
+on disk and in the database but is excluded from published stats by filter,
+not deletion, so the window can extend backward later by config alone. Reason:
+MC collection starts at 2025 and cross-court stats must draw from one window;
+a two-window release would invite silent blending, which D-18 forbids.
+
 ## Open
 
 **O-1 Domain and trademark check for CP51.** Owner action before public use of

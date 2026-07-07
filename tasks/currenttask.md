@@ -1,186 +1,190 @@
-# Task: Record the Municipal Court expansion (docs only)
+# Task: Phase 7, stages 1 and 2. MC parser delta and the MC fixture gate
 
 ## Orientation
 
-CP51 is expanding from Common Pleas (CP-51-CR) to also cover Philadelphia
-Municipal Court criminal cases (MC-51-CR). The owner has locked the scope
-decisions and a read-only recon of four real MC docket sheets has established
-the sheet anatomy. This task records all of it in the docs. Docs only: no
-code, no schema migration, no collection. The MC implementation itself is
-Phase 7, dispatched separately after this lands.
+CP51 parses Philadelphia criminal docket sheet PDFs into SQLite. Phases 1, 3,
+4 are complete; the CP parser is validated against a 31-docket fixture set.
+Phase 7 (DECISIONS.md D-18, D-19; ROADMAP.md Phase 7 block) extends the
+system to Municipal Court, MC-51-CR series only. This task is stages 1 and 2
+of that block: the parser delta that lets the existing parser read MC sheets,
+proven by a hand-picked MC fixture set that must cover the three renderings
+recon could not verify. Stages 3 to 5 (loader and schema, collector, stats
+filter) are later tasks. Do not touch them.
 
-Each edit below gives an anchor (existing text) and the exact change. If any
-anchor does not match the file as it stands, stop and report the mismatch
-instead of improvising. No em dashes anywhere. Synthetic examples only.
+Recon findings on MC sheets are recorded in docs/DATA_SOURCE.md, section
+"Municipal Court sheets (MC-51-CR)". Read it before planning. The scope rules
+are DECISIONS.md D-18 and D-19. Read both.
 
-## Edit 1: DECISIONS.md, two new decisions
+## Ground rules
 
-Append after D-17, before the `## Open` section:
+1. Post an implementation plan and wait for approval before running anything.
+   The plan must include the inspect-and-report items in Step 1.
+2. Every command is ask-first. Commit and push are owner-only; you stage and
+   stop.
+3. Maintain a task artifact as you work. Write the tasks/worklog.md entry
+   before the final commit so the commit contains it (D-17).
+4. This file is frozen. Corrections arrive as one-line diffs from the owner.
+5. Privacy, absolute: defendant names and dates of birth exist in memory only.
+   New in this task: the RELATED CASES section on MC sheets carries a caption
+   column with third-party names. Parse that section for docket number, court,
+   and association reason only. No caption text may ever be stored, printed,
+   logged, committed, or written to the worklog. The search results page also
+   has a Case Caption column: never read it; harvest Docket Number and the
+   docket-sheet link only.
+6. No em dashes in any code, comment, commit message, or worklog text.
+7. Portal contact is owner-directed only (D-15). Randomized politeness delays
+   on every fetch. Never refetch a cached docket.
+8. Do not modify the database schema in this task. cases.dc_number and all
+   loading changes are stage 3. This task ends at parsed interim output.
 
-```
-**D-18 Municipal Court expansion; scope and rules (2026-07-06).** CP51 covers
-both Philadelphia criminal trial courts. In scope: the MC-51-CR docket series
-only. Out of scope: MC-51-SU (summaries), MC-51-MD (miscellaneous), the
-traffic division, and any CP or MC series other than -CR. Held for Court and
-Proceed to Court are non-terminal statuses, never counted as outcomes; the
-outcome of a held felony is read from its CP docket. When an MC conviction is
-appealed de novo to CP, the CP result is the outcome of record and the MC
-result is superseded. Dockets sharing an OTN and District Control Number form
-a consolidated sibling group (confirmed on real MC sheets via the RELATED
-CASES section): siblings are kept as separate case rows with distinct charge
-sets, never merged and never counted as independent incidents; incident-level
-stats key on the OTN plus DCN group. Every output carries its source court;
-courts are never silently blended. Comparable-tool precedent: D-13's
-reference keeps its two court tiers separate and headlines the lower court.
+## Step 0: repo state check
 
-**D-19 Window amendment: published data 2025 forward (2026-07-06).** Amends
-D-16. The published dataset and all go-forward collection cover filings from
-2025-01-01 for both courts. The 2023 and 2024 CP data already collected stays
-on disk and in the database but is excluded from published stats by filter,
-not deletion, so the window can extend backward later by config alone. Reason:
-MC collection starts at 2025 and cross-court stats must draw from one window;
-a two-window release would invite silent blending, which D-18 forbids.
-```
+`[agent] [once per task, ask first]` `git log --oneline -5` and `git status`.
+Report both. Working tree must be clean before any edit.
 
-## Edit 2: METHODOLOGY.md, replace the MC bullet with the two-court rules
+## Step 1: inspect and report (goes in your implementation plan)
 
-Anchor (replace this bullet):
+The planner does not have the parser source. Before proposing edits, read the
+repo and report in your plan:
 
-```
-- **Municipal Court is out of scope.** Many Philadelphia cases begin and end
-  in Municipal Court; CP51 covers Common Pleas only for now (ROADMAP).
-```
+1. How src/parse/docket_parser.py recognizes and registers sections: the
+   exact mechanism (header list, regex table, state machine), with the code
+   location, and what currently happens to an unrecognized section header
+   (which section its lines fold into).
+2. How the court banner line is handled today, and where court type could be
+   detected (banner text, docket number prefix, or both). Propose one.
+3. Where the Case Local Number(s) table appears in the text extraction and
+   what its rows look like, so the District Control Number extraction rule
+   can be exact.
+4. Whether the four MC recon sheets are already in the local PDF cache, with
+   their paths, or must be refetched.
+5. How the CP fixture set is fetched and cached (scripts/fetch_fixtures.py
+   behavior, cache directory, raw_dockets ledger interaction), and whether it
+   can fetch an MC-51-CR docket number unchanged.
+6. The parser's existing privacy assertion on write: where it lives and what
+   it checks, so the related-cases caption guard can extend the same
+   mechanism.
+7. The exact shape of one CP interim JSON record (top-level keys only), so
+   the regression rule in Step 5 is checkable.
 
-Replacement:
+Your plan then lays out the concrete edits for Steps 2 to 6 against those
+facts. Approval of the plan is the gate; nothing runs before it.
 
-```
-- **Two courts, never blended (D-18).** Every metric is computed and shown
-  per source court. Municipal Court headlines charges that lead as
-  misdemeanors (DUI, standalone simple assault, retail theft, small drug
-  possession); Common Pleas headlines felonies. A combined view, where shown,
-  is labeled as combined.
-- **The CP selection effect.** A misdemeanor appearing in a Common Pleas case
-  is there because it was co-charged with a felony. CP-only numbers for such
-  charges describe the felony-adjacent slice, not the standalone charge, and
-  the product says so wherever they are shown.
-- **MC exclusions.** MC-51-SU, MC-51-MD, and traffic-division matters are out
-  of scope. Held for Court and Proceed to Court are non-terminal and never
-  enter a denominator; a held felony's outcome is read from its CP docket.
-- **De novo appeals.** When an MC conviction is retried de novo in CP, the CP
-  result is the outcome of record; the superseded MC result never counts.
-- **Consolidated siblings.** MC dockets sharing an OTN and District Control
-  Number are one incident charged across sibling dockets. Charge-level stats
-  may use each charge once; incident-level counts key on the OTN plus DCN
-  group, so one incident is never counted as five.
-```
+## Step 2: MC fixture acquisition (portal, every run owner-approved)
 
-## Edit 3: ROADMAP.md, unpark MC and add Phase 7
+Goal: a cached MC fixture set of at least 8 and at most 15 MC-51-CR dockets,
+filings 2025 forward (D-19), that includes at minimum:
 
-Remove this bullet from `## Parked (deliberately not now)`:
+- one case closed by conviction via guilty plea and, if findable, one closed
+  by trial verdict (proves plea versus trial disposition labeling),
+- one sentenced case or one AMP-diverted case, ideally one of each (proves
+  sentence and diversion rendering),
+- one held-for-court case (proves how the CP docket surfaces),
+- one still-open case (proves pending handling on MC).
 
-```
-- **Municipal Court coverage.** Many Philadelphia cases live entirely in MC;
-  large scope expansion, revisit after CP is solid.
-```
+Method, subject to your plan: one Date Filed search on an early 2025 week
+(early in the year so cases have had time to close), harvest MC-51-CR docket
+numbers only (regex on the Docket Number cell; never the caption column;
+MC-51-SU, MC-51-MD, traffic, and every CP row are skipped), fetch a batch of
+sheets within a hard budget you state in the plan (suggested: 20 fetches per
+run), inspect statuses locally, and select the fixture set. If a required
+rendering is missing, propose one additional week and ask before fetching.
+Reuse the proven fetch path; do not write a new portal module. AbortGuard
+discipline from the CP collector applies if you touch the results page.
 
-Insert after the Phase 6 block, before the Parked section:
+Report the selected fixture list as docket numbers with a one-word reason
+each (plea, trial, sentenced, amp, held, open, extra). No captions, no names.
 
-```
-### Phase 7: Municipal Court expansion (scheduled next, before Phase 5)
+## Step 3: parser delta
 
-Extends acquisition, parsing, and loading to the MC-51-CR docket series under
-D-18 and D-19. Recon on real MC sheets confirmed the CP parser runs with a
-small bounded delta; MC gets no separate parse path.
+Bounded delta, no separate MC parse path (ROADMAP Phase 7 stage 1):
 
-Stages:
-1. Parser delta: skip the MUNICIPAL COURT OF PHILADELPHIA COUNTY banner;
-   register RELATED CASES, CASE PARTICIPANTS, BAIL INFORMATION, and CASE
-   FINANCIAL INFORMATION as sections so RELATED CASES third-party captions
-   stop folding into CASE INFORMATION; extract District Control Number from
-   the Case Local Number(s) table; parse RELATED CASES docket number, court,
-   and association reason while never storing its caption column.
-2. MC fixture validation, the gate: a hand-picked MC fixture set that must
-   include at least one case closed by conviction (verifies plea versus trial
-   labeling), one sentenced or AMP-diverted case (verifies the sentence and
-   diversion rendering), and one held-for-court case (verifies how the CP
-   docket surfaces). These three renderings are unverified by recon and block
-   collection until proven.
-3. Loader and schema: populate cases.court_type with Municipal Court, add
-   cases.dc_number, implement the consolidated-sibling grouping and the de
-   novo outcome-of-record rule.
-4. Collector: harvest MC-51-CR rows from the same search results (same
-   CpDocketSheet link pattern, confirmed by recon), same caption privacy
-   rule, window per D-19.
-5. Stats layer filter: published outputs restrict to filings 2025 forward for
-   both courts.
+1. Accept the MUNICIPAL COURT OF PHILADELPHIA COUNTY banner wherever the CP
+   banner is handled today; set court type in the parsed record: value
+   "Municipal Court" for MC-51 dockets, "Common Pleas" for CP-51, using the
+   detection you proposed in Step 1 item 2.
+2. Register RELATED CASES, CASE PARTICIPANTS, BAIL INFORMATION, and CASE
+   FINANCIAL INFORMATION as known sections so their lines stop folding into
+   CASE INFORMATION. CASE PARTICIPANTS, BAIL INFORMATION, and CASE FINANCIAL
+   INFORMATION are recognized and skipped, not parsed.
+3. Parse RELATED CASES into a list on the record: docket number, court, and
+   association reason per row. The caption column is never captured; extend
+   the existing privacy assertion so a write fails if a related-cases entry
+   carries any field beyond those three.
+4. Extract the District Control Number from the Case Local Number(s) table
+   into a dc_number field on the parsed record (string, as printed, null when
+   absent). Parser output only; no schema or loader change.
+5. Tests: unit tests on synthetic text fixtures for the section registration
+   (a RELATED CASES block with a fake caption must produce entries without
+   it), the dc_number extraction, court type detection for both prefixes, and
+   one regression test asserting a CP-shaped input still parses identically.
+   Synthetic fixtures use fictional names in the style already used by the
+   repo (surname Example) and docket MC-51-CR-0000000-2025.
 
-Acceptance: MC fixtures parse with zero privacy sentinels and correct fields
-for all three unverified renderings; a collection batch loads MC cases with
-court_type, dc_number, and sibling groups populated; no SU, MD, or traffic
-docket enters the database; the published-stats filter excludes pre-2025
-filings; idempotency holds across a repeated run.
-```
+## Step 4: parse the MC fixtures, prove the gate
 
-Also update the doc's status header if it summarizes phase order, so Phase 7
-is shown as the next phase to start.
+`[agent] [once per task, ask first]` run the parser over the MC fixture set.
+Expected: every fixture parses with parse_status ok, zero privacy assertion
+failures. Then verify and report, quoting field values (dispositions,
+sentence components, statuses; never names):
 
-## Edit 4: DATA_SOURCE.md, MC sheet anatomy
+1. Plea versus trial labeling on the conviction fixtures: the disposition
+   strings as parsed, and that they are distinguishable as plea versus
+   verdict.
+2. Sentence or AMP rendering on the sentenced or diverted fixture: sentence
+   components as parsed (type, lengths, raw text), or the diversion
+   disposition string.
+3. Held-for-court rendering: the case status and per-charge disposition
+   strings as parsed, and whether the sheet names the CP docket it was held
+   to (if it appears in RELATED CASES or elsewhere, say where).
+4. dc_number present on every fixture that prints one.
+5. related_cases parsed on any fixture that has the section, with reciprocal
+   siblings visible where they exist.
 
-Insert a new section after `## Anatomy of a docket sheet` content ends and
-before `## Parser field mapping`:
+## Step 5: CP regression proof
 
-```
-## Municipal Court sheets (MC-51-CR)
+`[agent] [once per task, ask first]` re-run the parser over all 31 CP
+fixtures. Expected, precomputed: 31 of 31 parse with parse_status ok; for
+every record, all previously existing fields are value-identical to the
+current interim JSON; the only permitted differences are the new keys (dc_number as printed, CP sheets carry a DCN too; related_cases empty). court_type already exists in the record and must be value-identical on all 31.
+Prove it with a scripted field-level diff, not eyeballing. Any other
+difference is a stop-and-report, not a fix.
 
-Recon on four real 2026 MC sheets (two open, two closed) established:
+## Step 6: audit pack for the owner
 
-- Banner reads MUNICIPAL COURT OF PHILADELPHIA COUNTY; everything else about
-  the page furniture matches CP.
-- Four sections CP sheets do not have: RELATED CASES (between CASE
-  INFORMATION and STATUS INFORMATION), CASE PARTICIPANTS, BAIL INFORMATION,
-  and CASE FINANCIAL INFORMATION (closed cases only).
-- The charges grid is CP-identical: same columns, statute notation, grades,
-  and continuation-line behavior. Ungraded rows (DUI, drug) leave the grade
-  column blank.
-- Judge Assigned is present but blank on all sampled sheets, open and closed.
-  Judges appear by name only in CALENDAR EVENTS and ENTRIES. The disposition
-  judge field is expected to populate on sentenced cases; unverified.
-- OTN appears in CASE INFORMATION and on every charge row. The District
-  Control Number lives inside the Case Local Number(s) table, not as a
-  standalone field.
-- RELATED CASES lists consolidated sibling dockets reciprocally, with an
-  association reason. Its caption column contains third-party names and is
-  never stored, printed, or logged; the section is parsed for docket number,
-  court, and association reason only.
-- Unverified pending MC fixtures: plea versus trial disposition labeling,
-  sentence and AMP rendering, and held-for-court rendering.
-```
+Write a small audit pack (markdown, gitignored location or tasks/ artifact,
+your plan says which) containing, for each gate rendering, the docket number
+and the parsed fields quoted next to the raw text lines they came from, so
+the owner can hand-check the three renderings. No names, no captions, no
+DOBs. The owner's pass on this pack is part of the gate.
 
-## Edit 5: DATABASE.md, cases table notes
+## Step 7: worklog and staging
 
-In the `### cases` table: change the `court_type` row description from
-`default Common Pleas` to `Common Pleas or Municipal Court (D-18)`, and add a
-row directly under `otn`:
-
-```
-| dc_number | str(40), null | District Control Number, from the Case Local Number(s) table; with otn, keys consolidated sibling groups (D-18). Added in Phase 7 |
-```
-
-## Edit 6: worklog entry
-
-Write the `tasks/worklog.md` entry (title: "Docs: Municipal Court expansion
-recorded, D-18 and D-19") before the final commit, summarizing the six edits.
-
-## Commands
-
-`[agent] [once per task, ask first]` `git diff` review of the six files, then
-a single commit, message "Docs: record MC expansion, D-18 and D-19, Phase 7".
+Write the tasks/worklog.md entry (title: "Phase 7 stages 1 and 2: MC parser
+delta and fixture gate"): outcome, edits, fixture list with reasons, gate
+results, regression proof summary, deviations, owner items, next-agent notes
+(stage 3 is next: schema dc_number, court_type loading, sibling grouping, de
+novo rule). Then stage for owner review: the parser, its tests, the worklog.
+Interim JSON and PDF caches stay gitignored and unstaged. Stop; the owner
+commits and pushes.
 
 ## Definition of done
 
-- All six edits applied with anchors matched exactly (any mismatch reported,
-  not improvised).
-- No file outside DECISIONS.md, METHODOLOGY.md, ROADMAP.md, DATA_SOURCE.md,
-  DATABASE.md, and tasks/worklog.md is touched.
-- No em dashes introduced. No real defendant or third-party name anywhere.
-- Worklog entry present in the final commit.
+- Implementation plan posted with all seven Step 1 items and approved before
+  any execution.
+- MC fixture set cached, 8 to 15 dockets, 2025 forward, covering plea
+  conviction, sentenced or AMP, held-for-court, and open; trial verdict
+  included if findable, absence reported if not.
+- Parser delta implemented as four bounded changes; no other parse behavior
+  altered; unit tests pass.
+- All MC fixtures parse ok; the three gate renderings verified and reported
+  with quoted field values; privacy assertion extended and holding.
+- CP regression: 31 of 31 identical on existing fields, proven by scripted
+  diff.
+- Audit pack delivered; owner pass recorded.
+- No caption text, defendant name, third-party name, or DOB anywhere: not in
+  code, output, logs, worklog, or the audit pack.
+- No schema change, no loader change, no collector change.
+- Worklog entry present in the final commit; only parser, tests, and worklog
+  staged.
+- No em dashes introduced.

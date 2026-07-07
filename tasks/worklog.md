@@ -354,3 +354,52 @@ Entry template:
 - Deviations: none. All six anchors matched the files exactly; no improvisation. Two judgment calls were owner-confirmed before editing: the Phases-table row wording and the Last-updated date bump.
 - Owner items: none outstanding beyond the approved commit.
 - Next agent: Phase 7 (Municipal Court expansion) is the next phase to start, before Phase 5, per D-18, D-19, and the new ROADMAP Phase 7 block. The recon that backs these docs was read-only; the three renderings flagged unverified (plea versus trial labeling, sentence and AMP rendering, held-for-court) gate MC collection and must be proven on MC fixtures first.
+
+## 2026-07-06: Phase 7 stages 1 and 2: MC parser delta and fixture gate
+- Outcome: done
+- Built:
+  - src/parse/docket_parser.py: (a) split parse_docket into parse_docket (opens PDF) plus parse_docket_text (text to record), a behavior-neutral refactor so the section logic is testable on synthetic text; (b) detect_court_type from the docket prefix (MC- to Municipal Court, else Common Pleas) and skip the MUNICIPAL COURT banner on every page; (c) registered RELATED CASES, CASE PARTICIPANTS, BAIL INFORMATION, CASE FINANCIAL INFORMATION as known sections, extended the transient name and DOB lookup to also scan CASE PARTICIPANTS so the defendant hash basis is unchanged now that CASE PARTICIPANTS is its own section; (d) parse_related_cases into docket number, court, association reason using a controlled reason vocabulary only, never free text; (e) extract dc_number from the District Control Number line. Record gains case.court_type (now prefix-derived), case.dc_number, and top-level related_cases.
+  - src/identity.py: assert_related_cases_clean, the structural half of the privacy assertion; fails the write if any related-cases entry carries a field beyond docket_number, court, association_reason.
+  - scripts/parse_fixtures.py: calls assert_related_cases_clean after assert_no_leak.
+  - scripts/fetch_mc_fixtures.py: throwaway MC fixture fetcher, reuses portal.pdf_from_href, AbortGuard, and the collector Date Filed search; harvests only the docket cell and sheet anchor for MC-51-CR rows, never the caption column; --dry-run reports the anchor before any fetch; hard cap 20. NOT staged.
+  - tests/test_mc_parser.py: 7 unit tests on synthetic text (court type both prefixes, dc_number, related-cases caption dropped, header and free-text ignored, privacy guard raises on extra key, CP shape intact).
+  - tasks/auditpack-p7.md: owner hand-check pack for the three gate renderings, name-free.
+- Commands:
+  - pytest tests/test_mc_parser.py: 7 passed.
+  - CP regression diff (scratchpad harness, in-memory, no interim overwrite): 1258 CP baselines diffed, 1258 identical on existing fields, 0 mismatched, 0 parse failures. Only additions are case.dc_number (populated) and related_cases (empty on CP). Strict superset of the 31-fixture set (the ledger fixture tag was gone after the collector rebuild, so all CP interim on disk was diffed).
+  - fetch_mc_fixtures.py --dry-run (owner-approved, portal): week 2025-01-06 to 01-10, 1002 result rows, 133 MC-51-CR rows, sheet anchor CpDocketSheet (same endpoint as CP, so the proven fetch path applies).
+  - fetch_mc_fixtures.py (owner-approved, portal): 20 MC fixtures saved, no throttling.
+  - fetch_mc_fixtures.py --start 2025-01-13 --end 2025-01-17 (owner-approved additional week, portal): 1012 rows, 158 MC-51-CR, 20 more MC fixtures saved, no throttling.
+  - MC parse (scratchpad, MC-only), full fetched set: 40 of 40 parsed ok, 0 privacy failures, dc_number present on all 40.
+- Fixture set (selected 10 of 20 fetched, filings 2025, one-word reason):
+  - MC-51-CR-0000612-2025 plea (also the sentenced case, Probation 12 months)
+  - MC-51-CR-0000580-2025 amp (ARD diversion; AMP-specific not found this week)
+  - MC-51-CR-0000577-2025 held
+  - MC-51-CR-0000586-2025 held
+  - MC-51-CR-0000599-2025 held
+  - MC-51-CR-0000609-2025 held
+  - MC-51-CR-0000608-2025 extra (Withdrawn disposition variant)
+  - MC-51-CR-0000591-2025 open (Inactive, reciprocal sibling group)
+  - MC-51-CR-0000592-2025 open (Inactive, reciprocal sibling group)
+  - MC-51-CR-0000593-2025 extra (reciprocal sibling)
+  - MC-51-CR-0001081-2025 amp (second ARD diversion, week 2; 12 months plus a 60 day license suspension)
+  - MC-51-CR-0001056-2025 trial (week 2; a Waiver Trial is listed but the case is Active with no verdict entered)
+  - Trial verdict: not found across two sampled weeks (filed 2025-01-06 and 2025-01-13). A Waiver Trial appears listed on the Active case 0001056 with no verdict entered; no decided Guilty or Not Guilty verdict was found. AMP-specific diversion was also not found in either week; ARD diversion covers the diversion rendering.
+- Gate results: plea labeled "Guilty Plea - Negotiated"; diversion "ARD - County" with an ARD 12-month component; held for court renders as a per-charge "Held for Court" disposition with no date and no sentence (non-terminal, D-18); dc_number populated on every fixture; related_cases parsed with reciprocal siblings visible (0591 and 0592 reference each other) and Consolidated versus Joined groupings captured. Zero captions, names, or DOBs in any output.
+- Regression proof: scripted field-level diff, 1258 of 1258 CP records value-identical on all pre-existing fields, the only differences the two new keys. Not eyeballed.
+- Deviations:
+  - dc_number is populated (not null) on the CP corpus because CP sheets print a District Control Number in the same Case Local Number(s) table. Owner approved populating on both courts and amending the Step 5 expectation.
+  - parse_docket_text refactor added beyond the four bounded changes, accepted by the owner as behavior-neutral and proven by the regression diff.
+  - The 31-fixture ledger tag no longer exists after the collector rebuild; the regression was run over all 1258 CP interim records instead, a strict superset.
+  - CASE PARTICIPANTS name and DOB lookup extension (deviation). The transient defendant name and DOB lookup was extended to scan CASE PARTICIPANTS in addition to DEFENDANT INFORMATION. Reason: MC sheets carry the defendant name under CASE PARTICIPANTS, not under DEFENDANT INFORMATION; and on CP sheets the "Defendant" name line sat under a CASE PARTICIPANTS subheader that used to fold into DEFENDANT INFORMATION until this task registered CASE PARTICIPANTS as its own section. Scanning both keeps the first-match, and thus the defendant hash basis, unchanged (confirmed by the regression: defendant_hash identical on all 1258 CP records).
+- Owner items:
+  - Ledger rows were written for 40 MC fixtures across two weeks (RawDocket, note "mc fixture" then parse_status parsed); a db-snapshot re-upload at close was flagged as the trigger for this.
+  - Audit pack tasks/auditpack-p7.md awaits owner pass on the three renderings.
+  - One additional filing week (filed 2025-01-13 to 01-17) was fetched at owner approval; AMP-specific and a decided trial verdict were still not found. Further weeks are optional and may hit diminishing returns; both renderings appear rare in the early-2025 MC-51-CR population.
+  - assert_no_leak guards only the defendant name and DOB, not other third-party names (for example a "Probation Officer LastName, FirstName" line); none leaked here, flagged for stage 3.
+- Post-review clarifications (owner review items):
+  1. min_days rule, not bug. min_days on MC-51-CR-0000612-2025 is 360 because the sheet prints Probation "Max of 12.00 Months" only and save_current_sentence sets min_days = max_days when just a Max is present (an existing CP-validated fallback applied identically to every CP record). Documented, not changed. Caveat: for a probation term with no printed minimum this reports a minimum equal to the maximum; changing it would alter CP output and is out of scope for this task.
+  2. disposition_date null rule, not bug. The held charges on MC-51-CR-0000577-2025 carry disposition_date null even though the event header prints "Preliminary Hearing 05/19/2025 Final Disposition". disposition_date is sourced only from the per-charge sentencing/judge line; held-for-court charges have no such line, so the field is null. Capturing the event-header date for non-terminal held events is deferred to stage 3 (the held date is distinct from a sentencing date; D-18 treats held-for-court as non-terminal).
+  3. related_cases association_reason stores the grouping header, not the Association Reason column. The value captured (for example "Consolidated Defendant Cases", "Joined Codefendant Cases", or "Related") is the controlled grouping heading that precedes the docket rows, not the sheet's rightmost Association Reason column cell. That column sits immediately to the right of the Related Case Caption column, so reading it positionally risks capturing caption text; the grouping heading is captured instead as a caption-safe proxy from a fixed vocabulary. Audit pack wording corrected to match.
+  4. Held-for-court CP linkage IS on the MC sheet. Correcting the audit pack: the CP docket a held MC case is bound for prints in CASE INFORMATION as "Cross Court Docket Nos" (confirmed CP-51-CR values on the held fixtures 0000577, 0000586, 0000609). It is not captured in this task; recorded as a stage 3 item. It is not in RELATED CASES.
+- Next agent: stage 3 is schema and loader (cases.dc_number, court_type loading, OTN plus DCN sibling grouping, the de novo supersession rule). Interim JSON for MC is on disk (gitignored). Stage 3 items surfaced here: capture the Cross Court Docket Nos value from CASE INFORMATION (the held-to CP docket); decide whether non-terminal held events should carry the event-header date as disposition_date; and revisit whether the per-row Association Reason column can be read caption-safely. Related-cases reason vocabulary is controlled and may need extending if new phrases appear; extend ASSOCIATION_REASONS in docket_parser.py.

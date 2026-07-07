@@ -11,15 +11,35 @@ from src.parse.helpers import parse_date, to_days, ParseError, GRADES
 
 HEADERS = [
     "CASE INFORMATION",
+    "RELATED CASES",
     "STATUS INFORMATION",
     "CALENDAR EVENTS",
     "DEFENDANT INFORMATION",
+    "CASE PARTICIPANTS",
+    "BAIL INFORMATION",
     "CHARGES",
     "DISPOSITION SENTENCING/PENALTIES",
     "COMMONWEALTH INFORMATION",
     "ATTORNEY INFORMATION",
+    "CASE FINANCIAL INFORMATION",
     "ENTRIES",
 ]
+
+# Sections recognized so their lines stop folding into a neighbor, but whose
+# content is not turned into output fields (Phase 7, MC sheets). CASE
+# PARTICIPANTS is still scanned for the transient defendant name used only to
+# build the hash; nothing from these sections lands in the record.
+SKIP_SECTIONS = {
+    "CASE PARTICIPANTS",
+    "BAIL INFORMATION",
+    "CASE FINANCIAL INFORMATION",
+}
+
+# The defendant name (transient, hash only) prints under CASE PARTICIPANTS on
+# MC sheets and, on CP sheets, under a CASE PARTICIPANTS subheader that used to
+# fold into DEFENDANT INFORMATION. Search both so the hash basis is unchanged
+# now that CASE PARTICIPANTS is its own section.
+NAME_SECTIONS = ("DEFENDANT INFORMATION", "CASE PARTICIPANTS")
 
 DISPO_SKIP_HEADERS = {
     "DISPOSITION SENTENCING/PENALTIES",
@@ -53,6 +73,81 @@ def is_statute_token(tok: str) -> bool:
     return False
 
 
+# A related-cases row carries a Caption column with third-party names. It is
+# never captured. Every field below is pulled from a bounded pattern (a docket
+# regex, the court from the docket prefix, an association reason from a fixed
+# vocabulary), so the free-text caption cannot leak by construction.
+RELATED_DOCKET_RE = re.compile(r"(?:CP|MC)-\d{2}-[A-Z]{2}-\d{7}-\d{4}")
+
+# Association reason is the last column of a related-cases row, but the value
+# is a controlled CPCMS phrase that usually renders on its own wrapped line as
+# a grouping heading above the docket rows it covers. Reasons are matched ONLY
+# against this fixed vocabulary (longest first), never against free text, so
+# the caption column can never leak into the reason. A row with no controlled
+# phrase in scope stores association_reason None. Verified against real MC
+# sheets in Phase 7 stage 2; extend here if a real sheet prints a new phrase.
+ASSOCIATION_REASONS = [
+    "Consolidated Defendant Cases Number and Primary Participant",
+    "Joined Codefendant Cases Number and Different Primary Participant",
+    "Consolidated Defendant Cases",
+    "Joined Codefendant Cases",
+    "Refiled",
+    "Related",
+    "Consolidated",
+    "Joined",
+]
+
+
+def match_association_reason(line_str: str) -> str | None:
+    """Return the controlled association-reason phrase present in the line, or
+    None. Controlled vocabulary only, so caption text is never returned."""
+    for phrase in ASSOCIATION_REASONS:
+        if phrase in line_str:
+            return phrase
+    return None
+
+
+def parse_related_cases(lines: list[str]) -> list[dict]:
+    """Parse RELATED CASES rows into docket number, court, association reason.
+
+    The caption column (third-party names) is never read. Docket number comes
+    from a bounded regex, court from the docket prefix, and association reason
+    only from the controlled vocabulary (matched on the docket line or carried
+    from the most recent grouping heading). No free text is ever captured.
+    """
+    entries: list[dict] = []
+    current_reason: str | None = None
+    for line in lines:
+        line_str = line.strip()
+        if not line_str:
+            continue
+        heading = match_association_reason(line_str)
+        m = RELATED_DOCKET_RE.search(line_str)
+        if not m:
+            # A standalone controlled phrase is a grouping heading; carry it to
+            # the docket rows that follow.
+            if heading:
+                current_reason = heading
+            continue
+        docket = m.group(0)
+        entries.append({
+            "docket_number": docket,
+            "court": detect_court_type(docket),
+            "association_reason": heading or current_reason,
+        })
+    return entries
+
+
+def detect_court_type(docket_number: str) -> str:
+    """Court type from the docket-number prefix (Phase 7). The stem is
+    authoritative and always present, so it is preferred over the banner text.
+    MC-51 dockets are Municipal Court; everything else (CP-51) is Common Pleas.
+    """
+    if docket_number.startswith("MC-"):
+        return "Municipal Court"
+    return "Common Pleas"
+
+
 def parse_docket(pdf_path: Path) -> tuple[dict, list[str]]:
     """Parse one docket sheet PDF.
 
@@ -75,6 +170,16 @@ def parse_docket(pdf_path: Path) -> tuple[dict, list[str]]:
     except Exception as exc:
         raise ParseError(f"Failed to open/read PDF file: {type(exc).__name__}")
 
+    return parse_docket_text(docket_number, pages_text)
+
+
+def parse_docket_text(docket_number: str, pages_text: list[str]) -> tuple[dict, list[str]]:
+    """Parse already-extracted page text into the record and sentinels.
+
+    Split out from parse_docket so the section logic can be exercised on
+    synthetic text fixtures without a PDF. Behavior is identical to the prior
+    in-line body; the CP regression diff is the proof it changed nothing.
+    """
     # Gather transient names from page headers (under "v.")
     v_names = set()
     raw_lines = []
@@ -105,6 +210,8 @@ def parse_docket(pdf_path: Path) -> tuple[dict, list[str]]:
 
         # Skip page headers, footers, and disclaimers
         if line_str == "COURT OF COMMON PLEAS OF PHILADELPHIA COUNTY":
+            continue
+        if line_str == "MUNICIPAL COURT OF PHILADELPHIA COUNTY":
             continue
         if line_str == "DOCKET":
             continue
@@ -144,16 +251,24 @@ def parse_docket(pdf_path: Path) -> tuple[dict, list[str]]:
     defendant_name = None
     dob_str = None
 
-    # Find DOB in DEFENDANT INFORMATION
-    for line in sections.get("DEFENDANT INFORMATION", []):
+    # Transient name and DOB source lines, in section order. CASE PARTICIPANTS
+    # is now its own section; on CP sheets the "Defendant" name line lives
+    # there, so scanning both keeps the first-match (and thus the hash) exactly
+    # as it was when CASE PARTICIPANTS folded into DEFENDANT INFORMATION.
+    name_source_lines: list[str] = []
+    for header in NAME_SECTIONS:
+        name_source_lines.extend(sections.get(header, []))
+
+    # Find DOB
+    for line in name_source_lines:
         if "Date Of Birth:" in line or "Date of Birth:" in line:
             m_dob = re.search(r"Date\s+of\s+Birth:\s*([\d/]+)", line, re.IGNORECASE)
             if m_dob:
                 dob_str = m_dob.group(1).strip()
                 break
 
-    # Find Defendant Name in CASE PARTICIPANTS (part of DEFENDANT INFORMATION section)
-    for line in sections.get("DEFENDANT INFORMATION", []):
+    # Find Defendant Name
+    for line in name_source_lines:
         m_def = re.match(r"^Defendant\s+(.*)$", line.strip())
         if m_def:
             defendant_name = m_def.group(1).strip()
@@ -463,20 +578,38 @@ def parse_docket(pdf_path: Path) -> tuple[dict, list[str]]:
     # Format charges as list
     charges_list = sorted(list(parsed_charges.values()), key=lambda x: x["sequence"])
 
+    # District Control Number from the Case Local Number(s) table. Printed on
+    # both CP and MC sheets; null when absent. Scanned across all sections
+    # because the table folds into whatever section precedes it.
+    dc_number = None
+    for section_lines in sections.values():
+        for line in section_lines:
+            m_dc = re.match(r"^District Control Number\s+(\S+)", line.strip())
+            if m_dc:
+                dc_number = m_dc.group(1).strip()
+                break
+        if dc_number:
+            break
+
+    # Related cases (MC sheets only; CP sheets have no such section).
+    related_cases = parse_related_cases(sections.get("RELATED CASES", []))
+
     record = {
         "docket_number": docket_number,
         "parser_version": 1,
         "parsed_at": datetime.now().replace(microsecond=0).isoformat(),
         "case": {
             "county": "Philadelphia",
-            "court_type": "Common Pleas",
+            "court_type": detect_court_type(docket_number),
             "case_status": case_status,
             "filed_date": filed_date,
             "otn": otn,
             "assigned_judge_raw": assigned_judge_raw,
+            "dc_number": dc_number,
             "defendant_hash": defendant_hash,
         },
         "charges": charges_list,
+        "related_cases": related_cases,
         "notes": [],
     }
 

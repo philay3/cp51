@@ -8,7 +8,7 @@ import json
 from src.config import INTERIM_DIR, RAW_DIR
 from src.db.schema import RawDocket
 from src.db.session import SessionLocal, init_db
-from src.identity import assert_no_leak
+from src.identity import assert_no_leak, assert_related_cases_clean
 from src.parse.docket_parser import parse_docket
 from src.parse.helpers import ParseError
 
@@ -26,6 +26,7 @@ def main() -> None:
             record, sentinels = parse_docket(path)
             text = json.dumps(record, indent=2, ensure_ascii=False)
             assert_no_leak(sentinels, text)
+            assert_related_cases_clean(record)
             (INTERIM_DIR / f"{docket}.json").write_text(text)
             n_ch = len(record["charges"])
             n_sent = sum(1 for c in record["charges"] if c["sentences"])

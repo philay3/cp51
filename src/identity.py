@@ -39,3 +39,23 @@ def assert_no_leak(sentinels: list[str], text: str) -> None:
             raise RuntimeError(
                 "privacy assertion failed: identifying string found in output"
             )
+
+
+RELATED_CASE_KEYS = {"docket_number", "court", "association_reason"}
+
+
+def assert_related_cases_clean(record: dict) -> None:
+    """Structural half of the privacy assertion for Phase 7 MC sheets.
+
+    A related-cases row carries a caption column with third-party names. The
+    parser captures only docket number, court, and association reason. This
+    guard fails the write if any entry carries a field beyond those three, so a
+    caption (or any other stray value) can never reach interim JSON.
+    """
+    for entry in record.get("related_cases", []):
+        extra = set(entry.keys()) - RELATED_CASE_KEYS
+        if extra:
+            raise RuntimeError(
+                "privacy assertion failed: related case entry carries "
+                "unexpected fields"
+            )
